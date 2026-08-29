@@ -73,6 +73,47 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE INDEX IF NOT EXISTS idx_alert_ts ON alerts(ts);
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+
+-- Captures the engine could not stand behind. A read below the confidence
+-- floor is not stored as a sighting - it never was, and inventing one is how a
+-- platform starts fabricating vehicles. But the *evidence* is worth keeping for
+-- a while: the CTC lattice still holds the plate, and once the neighbouring
+-- cameras have reported, a candidate set exists that did not exist at capture
+-- time. `evidence` is dropped by prune_evidence() once that window has passed.
+CREATE TABLE IF NOT EXISTS unresolved (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          REAL NOT NULL,
+    camera_id   TEXT NOT NULL,
+    best_text   TEXT,                   -- what the engine decoded, below floor
+    confidence  REAL NOT NULL,
+    evidence    BLOB,                   -- CTC lattices, float16, compressed
+    frames      INTEGER NOT NULL DEFAULT 1,
+    condition   TEXT,
+    true_plate  TEXT,                   -- ground truth, simulator only
+    resolved    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_unres_open ON unresolved(resolved, ts);
+
+-- Registrations the platform *inferred* rather than read. Deliberately not in
+-- `sightings`: an inference is a hypothesis with an evidence chain, not an
+-- observation, and the two must never be confused by a query that ends up in
+-- front of a magistrate. Keeping them apart also enforces the no-chaining rule
+-- structurally - candidate sets are built from `sightings`, so an inference can
+-- never become evidence for another inference.
+CREATE TABLE IF NOT EXISTS inferences (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    unresolved_id INTEGER NOT NULL,
+    ts            REAL NOT NULL,
+    camera_id     TEXT NOT NULL,
+    plate         TEXT NOT NULL,
+    score         REAL NOT NULL,        -- per-character CTC log-likelihood
+    margin        REAL NOT NULL,        -- how far it beat the runner-up
+    candidates    INTEGER NOT NULL,     -- how many plates it was chosen from
+    detail        TEXT,                 -- JSON: the neighbour sightings that supported it
+    true_plate    TEXT,
+    FOREIGN KEY (unresolved_id) REFERENCES unresolved(id)
+);
+CREATE INDEX IF NOT EXISTS idx_infer_plate ON inferences(plate, ts);
 """
 
 
@@ -131,6 +172,8 @@ def reset(path: Path | None = None, keep_watchlist: bool = False) -> None:
     conn.executescript(SCHEMA)
     conn.execute("DELETE FROM sightings")
     conn.execute("DELETE FROM alerts")
+    conn.execute("DELETE FROM inferences")
+    conn.execute("DELETE FROM unresolved")
     if not keep_watchlist:
         conn.execute("DELETE FROM watchlist")
     conn.commit()
@@ -164,6 +207,97 @@ def add_sightings(rows: list[Sighting], conn: sqlite3.Connection | None = None) 
     conn.executemany(_INSERT, payload)
     conn.commit()
     return len(payload)
+
+
+def ensure_schema(conn: sqlite3.Connection | None = None) -> sqlite3.Connection:
+    """Create any missing tables. Cheap - every statement is IF NOT EXISTS - and
+    it lets the repair layer run against a database seeded before it existed."""
+    conn = conn or connect()
+    conn.executescript(SCHEMA)
+    return conn
+
+
+def add_unresolved(ts: float, camera_id: str, best_text: str, confidence: float,
+                   evidence: bytes | None, frames: int = 1, condition: str | None = None,
+                   true_plate: str | None = None,
+                   conn: sqlite3.Connection | None = None) -> int:
+    conn = conn or connect()
+    cur = conn.execute(
+        "INSERT INTO unresolved (ts, camera_id, best_text, confidence, evidence,"
+        " frames, condition, true_plate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (ts, camera_id, best_text, confidence, evidence, frames, condition, true_plate))
+    return int(cur.lastrowid)
+
+
+def open_unresolved(since: float | None = None, until: float | None = None,
+                    limit: int = 500, conn: sqlite3.Connection | None = None) -> list[dict]:
+    """Captures still awaiting a verdict, oldest first."""
+    sql = "SELECT * FROM unresolved WHERE resolved = 0 AND evidence IS NOT NULL"
+    params: list = []
+    if since is not None:
+        sql += " AND ts >= ?"
+        params.append(since)
+    if until is not None:
+        sql += " AND ts <= ?"
+        params.append(until)
+    sql += " ORDER BY ts LIMIT ?"
+    params.append(limit)
+    return rows(sql, tuple(params), conn=conn)
+
+
+def resolve_unresolved(ids: list[int], conn: sqlite3.Connection | None = None) -> None:
+    if not ids:
+        return
+    conn = conn or connect()
+    conn.executemany("UPDATE unresolved SET resolved = 1 WHERE id = ?",
+                     [(int(i),) for i in ids])
+    conn.commit()
+
+
+def add_inference(unresolved_id: int, ts: float, camera_id: str, plate: str,
+                  score: float, margin: float, candidates: int, detail: dict,
+                  true_plate: str | None = None,
+                  conn: sqlite3.Connection | None = None) -> int:
+    conn = conn or connect()
+    cur = conn.execute(
+        "INSERT INTO inferences (unresolved_id, ts, camera_id, plate, score, margin,"
+        " candidates, detail, true_plate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (unresolved_id, ts, camera_id, plate, score, margin, candidates,
+         json.dumps(detail), true_plate))
+    return int(cur.lastrowid)
+
+
+def inferences(plate: str | None = None, since: float | None = None, limit: int = 200,
+               conn: sqlite3.Connection | None = None) -> list[dict]:
+    sql = "SELECT * FROM inferences WHERE 1 = 1"
+    params: list = []
+    if plate:
+        sql += " AND plate = ?"
+        params.append(plate)
+    if since is not None:
+        sql += " AND ts >= ?"
+        params.append(since)
+    sql += " ORDER BY ts DESC LIMIT ?"
+    params.append(limit)
+    out = rows(sql, tuple(params), conn=conn)
+    for r in out:
+        r["detail"] = json.loads(r["detail"]) if r.get("detail") else {}
+    return out
+
+
+def prune_evidence(older_than_s: float, conn: sqlite3.Connection | None = None) -> int:
+    """Drop retained CTC lattices past the reconciliation window.
+
+    The evidence is only useful until the neighbouring cameras have reported and
+    the repair pass has run. Keeping it beyond that turns a bounded buffer into
+    an unbounded store of raw recognition data, which is both a storage problem
+    and a data-protection one.
+    """
+    conn = conn or connect()
+    cur = conn.execute("UPDATE unresolved SET evidence = NULL WHERE evidence IS NOT NULL"
+                       " AND ts < ?", (older_than_s,))
+    conn.commit()
+    return cur.rowcount
 
 
 def add_alert(kind: str, severity: str, message: str, *, plate: str | None = None,

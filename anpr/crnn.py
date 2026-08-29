@@ -545,8 +545,19 @@ class CRNNReader:
         forward pass over two or three stacked crops rather than two or three
         passes.
         """
+        return self.read_with_logits(gray)[0]
+
+    def read_with_logits(self, gray: np.ndarray):
+        """read(), plus the CTC lattices it decided from.
+
+        The lattices are what the network-constrained repair pass needs: they
+        still hold the plate even when the decode did not find it, so a
+        candidate string from a neighbouring camera can be scored against the
+        original evidence rather than against the string that came out of it.
+        """
         hyps = row_hypotheses(gray)
         lg = self.logits_batch(hyps, unwrap=False)
+        lattices = [lg[i] for i in range(len(hyps))]
         best = None
         for i in range(len(hyps)):
             cand = self._decode(lg[i])
@@ -558,8 +569,8 @@ class CRNNReader:
             if best is None or rank > best[0]:
                 best = (rank, cand)
         if best is None:
-            return "", [], "", "", 0.0
-        return best[1]
+            return ("", [], "", "", 0.0), lattices
+        return best[1], lattices
 
 
 def load(path=None, device: str = "cpu") -> CRNNReader | None:

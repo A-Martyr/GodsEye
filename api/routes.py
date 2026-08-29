@@ -134,6 +134,40 @@ def analytics_sectors(minutes: float = Query(config.DEFAULT_WINDOW_MIN, ge=1, le
 
 
 # --- alerts and watchlist ----------------------------------------------
+@router.get("/inferences", summary="Registrations inferred, not read")
+def list_inferences(plate: str | None = None, hours: float = Query(6.0, gt=0),
+                    limit: int = Query(100, ge=1, le=1000)):
+    """Plates the repair pass recovered from neighbouring cameras.
+
+    Deliberately a separate endpoint from `/sightings/recent`: these are
+    hypotheses with an evidence chain, not observations, and an operator acting
+    on one should know which they are looking at.
+    """
+    from core import repair as repair_mod
+
+    since = time.time() - hours * 3600.0
+    return {"inferences": db.inferences(plate=plate.upper().replace(" ", "") if plate else None,
+                                        since=since, limit=limit),
+            "summary": repair_mod.summary(since=since)}
+
+
+@router.post("/repair/run", summary="Reconcile refused captures against the network")
+def run_repair(hours: float = Query(6.0, gt=0), limit: int = Query(200, ge=1, le=2000)):
+    """Run the repair pass over the captures the engine refused.
+
+    Trails the present by `config.REPAIR_LAG_S`: half the evidence is the
+    downstream camera, which has not seen the vehicle yet at the moment a
+    capture fails.
+    """
+    from core import repair as repair_mod
+
+    now = time.time()
+    made = repair_mod.repair(since=now - hours * 3600.0,
+                             until=now - config.REPAIR_LAG_S, limit=limit)
+    return {"inferred": len(made), "inferences": made[:50],
+            "summary": repair_mod.summary(since=now - hours * 3600.0)}
+
+
 @router.get("/alerts", summary="Alert queue")
 def get_alerts(limit: int = Query(100, ge=1, le=1000), open_only: bool = False,
                hours: float = Query(24.0, ge=0.1, le=720)):

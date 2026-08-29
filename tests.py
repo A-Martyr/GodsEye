@@ -271,6 +271,58 @@ def main() -> int:
     check("alerts are de-duplicated",
           len(alert_rules.evaluate({**last, "ts": time.time()}, net=net)) == 0)
 
+    print("\nnetwork-constrained repair")
+    from core import repair as repair_mod
+
+    repair_cam = next((c for c in net.cameras if net.neighbours(c)), None)
+    if repair_cam is None or eng.crnn is None:
+        check("repair layer exercised", True,
+              "skipped: no torch backend or no linked cameras")
+    else:
+        nb = net.neighbours(repair_cam)[0]
+        target = plates.random_plate(rng)
+        base = time.time() - 600.0
+        gap = max(net.free_flow_minutes(nb, repair_cam), 0.5) * 60.0 * 1.5
+        # the neighbour saw it a plausible travel time earlier
+        db.add_sighting(db.Sighting(ts=base - gap, camera_id=nb, plate=target,
+                                    confidence=0.99, condition="daylight",
+                                    ocr_variant="test", true_plate=target))
+        blob, decoded = None, ""
+        for cond in ("cheap_cam", "storm", "far_lane", "fog", "night_glare"):
+            frames = [plates.capture(target, cond, rng).image for _ in range(3)]
+            read, lattices = eng.read_evidence(frames)
+            if not read.accepted and lattices:
+                blob, decoded = repair_mod.pack_evidence(lattices), read.text
+                break
+        if blob is None:
+            check("repair layer exercised", True, "skipped: no refused capture produced")
+        else:
+            uid = db.add_unresolved(base, repair_cam, decoded, 0.1, blob, frames=3,
+                                    condition="test", true_plate=target)
+            before = db.stats()["sightings"]
+            made = repair_mod.repair(since=base - 3600.0, until=base + 1.0, limit=50)
+            mine = [m for m in made if m["unresolved_id"] == uid]
+            check("repair recovers a plate the engine refused",
+                  bool(mine) and mine[0]["plate"] == target,
+                  f"engine read {decoded or 'nothing'} -> "
+                  f"{mine[0]['plate'] if mine else 'no inference'} (truth {target})")
+            check("an inference carries its evidence chain",
+                  bool(mine) and bool(mine[0]["detail"].get("support")))
+            check("inference never writes to the sightings table",
+                  db.stats()["sightings"] == before, f"{before} rows before and after")
+            check("the repaired capture is not stored as a sighting",
+                  all(row["camera_id"] != repair_cam
+                      for row in db.sightings_for_plate(target)))
+
+        clone_plate = plates.random_plate(rng)
+        db.add_sighting(db.Sighting(ts=base - gap, camera_id=nb, plate=clone_plate,
+                                    confidence=0.99, ocr_variant="test"))
+        db.add_alert("clone", "critical", "test clone", plate=clone_plate,
+                     camera_id=nb, ts=base - 60.0)
+        cands = repair_mod.candidate_plates(repair_cam, base, net)
+        check("a cloned plate is excluded from the candidate set",
+              clone_plate not in cands, f"{len(cands)} candidates, clone suppressed")
+
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:
         print("failed: " + ", ".join(FAILED))

@@ -167,7 +167,11 @@ class ANPREngine:
         """
         gray = segment.to_gray(image)
         self._last_debug = {"norm": crnn_mod.prepare(gray), "ink": None, "atoms": []}
-        text, confs, pattern, greedy, score = self.crnn.read(gray)
+        return self._crnn_plate_read(self.crnn.read(gray))
+
+    def _crnn_plate_read(self, decoded) -> PlateRead:
+        """Turn one CRNN decode into a PlateRead."""
+        text, confs, pattern, greedy, score = decoded
         if not text:
             return PlateRead(text="", confidence=0.0, plate_found=False, backend="crnn",
                              reason="the recogniser produced no registration for this crop")
@@ -178,6 +182,29 @@ class ANPREngine:
                          agreement=1.0, mean_confidence=mean,
                          char_confidences=list(confs), pattern=pattern,
                          raw=greedy, repaired=repaired, variant="crnn", backend="crnn")
+
+    def read_evidence(self, images: list[np.ndarray]):
+        """Read a burst and keep the CTC lattices -> (fused read, evidence).
+
+        The evidence is what makes a failed capture repairable later: the plate
+        is often still in the lattice when the decode did not find it, so a
+        candidate from a neighbouring camera can be scored against the original
+        image rather than against the wrong string it produced. Only the CRNN
+        backend has a lattice; on the classical fallback this degrades to an
+        ordinary burst read with no evidence, and those captures stay
+        unrepairable.
+        """
+        frames = [im for im in images if im is not None and im.size]
+        if self.crnn is None:
+            return self.read_burst(frames), []
+        reads, evidence = [], []
+        for im in frames:
+            decoded, lattices = self.crnn.read_with_logits(segment.to_gray(im))
+            evidence.append(lattices)
+            r = self._crnn_plate_read(decoded)
+            if r.text:
+                reads.append(r)
+        return self.fuse_reads(reads), evidence
 
     def _read_classical(self, image: np.ndarray) -> PlateRead:
         """Segment-and-classify: kept as the fallback when torch is absent.

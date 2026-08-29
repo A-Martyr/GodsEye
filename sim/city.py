@@ -117,7 +117,9 @@ class CitySimulator:
         self.cameras = list(self.net.cameras)
         self.gateways = self.net.gateways or self.cameras
         self.stats = {"captures": 0, "reads_ocr": 0, "reads_modelled": 0,
-                      "frames_decoded": 0, "dropped_low_confidence": 0, "misreads": 0}
+                      "frames_decoded": 0, "dropped_low_confidence": 0, "misreads": 0,
+                      "evidence_kept": 0}
+        self._schema_ready = False
         for _ in range(fleet_size):
             self.fleet.append(self._spawn(time.time()))
 
@@ -249,8 +251,13 @@ class CitySimulator:
             self.engine = engine()
         return self.engine
 
-    def read(self, cap: Capture, use_ocr: bool) -> tuple[str, float, str, str]:
-        """-> (plate as read, confidence, ocr mode, winning binarisation variant)"""
+    def read(self, cap: Capture, use_ocr: bool):
+        """-> (plate as read, confidence, ocr mode, winning variant, evidence)
+
+        `evidence` is the packed CTC lattices, kept only when the read is about
+        to be refused: those are the captures the repair pass can still rescue
+        once the neighbouring cameras have reported.
+        """
         if use_ocr:
             # A camera sees a vehicle several times as it crosses the trigger
             # zone. Reading only one of those frames throws away every other
@@ -260,12 +267,22 @@ class CitySimulator:
             frames = [plates.capture(cap.true_plate, cap.condition, self.rng).image
                       for _ in range(n)]
             eng = self._engine()
-            read = eng.read_burst(frames) if n > 1 else eng.read(frames[0])
+            if config.REPAIR_ENABLED:
+                read, lattices = eng.read_evidence(frames)
+            else:
+                read, lattices = (eng.read_burst(frames) if n > 1
+                                  else eng.read(frames[0])), []
             self.stats["reads_ocr"] += 1
             self.stats["frames_decoded"] = self.stats.get("frames_decoded", 0) + n
             if read.text and read.text != cap.true_plate:
                 self.stats["misreads"] += 1
-            return read.text, read.confidence, "engine", read.variant
+            # only pay to keep the lattice for captures that are about to be
+            # thrown away - a stored read has nothing left to recover
+            evidence = None
+            if lattices and not read.accepted:
+                from core import repair as repair_mod
+                evidence = repair_mod.pack_evidence(lattices)
+            return read.text, read.confidence, "engine", read.variant, evidence
         # calibrated stand-in: same error *rate* as the engine, cheap
         acc = CONDITION_ACCURACY.get(cap.condition, 0.9)
         self.stats["reads_modelled"] += 1
@@ -282,14 +299,14 @@ class CitySimulator:
             store = self.rng.random() < 0.94
             conf = (self.rng.uniform(floor, 1.0) if store
                     else self.rng.uniform(0.05, floor * 0.95))
-            return cap.true_plate, conf, "modelled", ""
+            return cap.true_plate, conf, "modelled", "", None
         store = self.rng.random() < 0.10          # a misread rarely looks certain
         conf = (self.rng.uniform(floor, 0.85) if store
                 else self.rng.uniform(0.01, floor * 0.9))
-        return _corrupt(cap.true_plate, self.rng), conf, "modelled", ""
+        return _corrupt(cap.true_plate, self.rng), conf, "modelled", "", None
 
-    def to_sighting(self, cap: Capture, use_ocr: bool) -> db.Sighting | None:
-        plate, conf, mode, variant = self.read(cap, use_ocr)
+    def to_sighting(self, cap: Capture, use_ocr: bool, conn=None) -> db.Sighting | None:
+        plate, conf, mode, variant, evidence = self.read(cap, use_ocr)
         self.stats["captures"] += 1
         # engine reads are judged by the backend that produced them; modelled
         # ones by the classical floor they were calibrated against
@@ -300,7 +317,17 @@ class CitySimulator:
         if not plate or conf < floor:
             # A real ANPR node discards reads it cannot stand behind. So do we —
             # which is why a trajectory can have gaps the operator must bridge.
+            # The read is refused, but the evidence is parked: core.repair can
+            # often name the vehicle once its neighbours have reported.
             self.stats["dropped_low_confidence"] += 1
+            if evidence:
+                if not self._schema_ready:
+                    db.ensure_schema(conn)      # a database seeded before the
+                    self._schema_ready = True   # repair tables existed
+                db.add_unresolved(cap.ts, cap.camera_id, plate, conf, evidence,
+                                  frames=config.BURST_FRAMES, condition=cap.condition,
+                                  true_plate=cap.true_plate, conn=conn)
+                self.stats["evidence_kept"] = self.stats.get("evidence_kept", 0) + 1
             return None
         return db.Sighting(
             ts=cap.ts, camera_id=cap.camera_id, plate=plate, confidence=round(conf, 4),
@@ -323,7 +350,7 @@ class CitySimulator:
         caps = self.advance(until_ts)
         sightings, fired = [], []
         for i, cap in enumerate(caps):
-            s = self.to_sighting(cap, use_ocr=i < budget)
+            s = self.to_sighting(cap, use_ocr=i < budget, conn=conn)
             if s is None:
                 continue
             s.id = db.add_sighting(s, conn=conn)
@@ -344,7 +371,7 @@ class CitySimulator:
         rows = []
         for cap in caps:
             use = self.rng.random() < ocr_fraction
-            s = self.to_sighting(cap, use_ocr=use)
+            s = self.to_sighting(cap, use_ocr=use, conn=conn)
             if s is not None:
                 rows.append(s)
         db.add_sightings(rows, conn=conn)
