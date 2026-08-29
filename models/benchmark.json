@@ -1,0 +1,105 @@
+{
+  "conditions": [
+    {
+      "condition": "clean",
+      "samples": 100,
+      "plate_accuracy": 1.0,
+      "char_accuracy": 1.0,
+      "accepted": 100,
+      "accepted_accuracy": 1.0,
+      "mean_confidence": 0.9952879440784455
+    },
+    {
+      "condition": "night",
+      "samples": 100,
+      "plate_accuracy": 1.0,
+      "char_accuracy": 1.0,
+      "accepted": 100,
+      "accepted_accuracy": 1.0,
+      "mean_confidence": 0.9948417228460312
+    },
+    {
+      "condition": "glare",
+      "samples": 100,
+      "plate_accuracy": 0.98,
+      "char_accuracy": 0.9930000000000001,
+      "accepted": 98,
+      "accepted_accuracy": 1.0,
+      "mean_confidence": 0.9732116810232401
+    },
+    {
+      "condition": "rain",
+      "samples": 100,
+      "plate_accuracy": 1.0,
+      "char_accuracy": 1.0,
+      "accepted": 100,
+      "accepted_accuracy": 1.0,
+      "mean_confidence": 0.9944331502914429
+    },
+    {
+      "condition": "motion_blur",
+      "samples": 100,
+      "plate_accuracy": 0.95,
+      "char_accuracy": 0.9697070707070707,
+      "accepted": 98,
+      "accepted_accuracy": 0.9693877551020408,
+      "mean_confidence": 0.9670174126327038
+    },
+    {
+      "condition": "angled",
+      "samples": 100,
+      "plate_accuracy": 0.86,
+      "char_accuracy": 0.9276868686868686,
+      "accepted": 91,
+      "accepted_accuracy": 0.9340659340659341,
+      "mean_confidence": 0.8983882223069668
+    },
+    {
+      "condition": "dirty",
+      "samples": 100,
+      "plate_accuracy": 0.71,
+      "char_accuracy": 0.8855454545454545,
+      "accepted": 87,
+      "accepted_accuracy": 0.7931034482758621,
+      "mean_confidence": 0.8897630032896996
+    },
+    {
+      "condition": "damaged",
+      "samples": 100,
+      "plate_accuracy": 0.77,
+      "char_accuracy": 0.9266161616161617,
+      "accepted": 95,
+      "accepted_accuracy": 0.8,
+      "mean_confidence": 0.9482770791649818
+    },
+    {
+      "condition": "low_res",
+      "samples": 100,
+      "plate_accuracy": 1.0,
+      "char_accuracy": 1.0,
+      "accepted": 100,
+      "accepted_accuracy": 1.0,
+      "mean_confidence": 0.9939454805850982
+    },
+    {
+      "condition": "mixed",
+      "samples": 100,
+      "plate_accuracy": 0.85,
+      "char_accuracy": 0.9131818181818183,
+      "accepted": 90,
+      "accepted_accuracy": 0.9222222222222223,
+      "mean_confidence": 0.919782377704978
+    }
+  ],
+  "overall": {
+    "condition": "OVERALL",
+    "samples": 1000,
+    "plate_accuracy": 0.9119999999999999,
+    "char_accuracy": 0.9615737373737374,
+    "accepted": 959,
+    "accepted_accuracy": 0.9447340980187695,
+    "mean_confidence": 0.9574948073923588
+  },
+  "elapsed_s": 82.0075044631958,
+  "samples_per_condition": 100
+}

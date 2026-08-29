@@ -1,0 +1,24 @@
+# GodsEye - city-wide ANPR platform
+# SIH 2026 | Team Armageddon
+
+# vision + OCR
+opencv-python-headless>=4.10
+numpy>=1.26
+pillow>=10.3
+scikit-learn>=1.5
+joblib>=1.4
+
+# platform
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.8
+python-multipart>=0.0.9
+networkx>=3.3
+pandas>=2.2
+
+# dashboard
+streamlit>=1.50
+pydeck>=0.9
+altair>=5.3
+requests>=2.32
+matplotlib>=3.8          # font fallback for the plate renderer
