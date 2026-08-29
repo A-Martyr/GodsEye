@@ -31,6 +31,7 @@ class ConditionResult:
     accepted: int
     accepted_accuracy: float
     mean_confidence: float
+    burst_accuracy: float = 0.0     # same plates, read as a burst (0 if not measured)
 
 
 def char_accuracy(truth: str, pred: str) -> float:
@@ -40,7 +41,16 @@ def char_accuracy(truth: str, pred: str) -> float:
     return hits / max(len(truth), len(pred))
 
 
-def run(samples: int = 120, seed: int = 2024, conditions=None, verbose: bool = True):
+def run(samples: int = 120, seed: int = 2024, conditions=None, verbose: bool = True,
+        burst: int = 1):
+    """Measure every condition.
+
+    `burst` is how many frames the node contributes per vehicle. At 1 this
+    measures the recogniser in isolation, which is the right number for judging
+    the model; at `config.BURST_FRAMES` it measures the path the platform
+    actually runs, which is the right number for judging the platform. Both are
+    reported so neither can be mistaken for the other.
+    """
     eng = ocr.engine()
     rng = random.Random(seed)
     conditions = conditions or plates.CONDITIONS
@@ -49,7 +59,7 @@ def run(samples: int = 120, seed: int = 2024, conditions=None, verbose: bool = T
     total_reads = 0
 
     for cond in conditions:
-        exact = chars = acc_exact = accepted = 0
+        exact = chars = acc_exact = accepted = burst_exact = 0
         confs = []
         for _ in range(samples):
             cap = plates.capture(None, cond, rng)
@@ -58,8 +68,18 @@ def run(samples: int = 120, seed: int = 2024, conditions=None, verbose: bool = T
             ok = read.text == cap.text
             exact += ok
             chars += char_accuracy(cap.text, read.text)
+            if burst > 1:
+                # the same vehicle, seen again as it crosses the zone
+                extra = [plates.capture(cap.text, cond, rng, two_row=cap.two_row).image
+                         for _ in range(burst - 1)]
+                read = eng.read_burst([cap.image] + extra)
+                # read_burst decodes every frame, the first one included, so the
+                # burst costs `burst` reads on top of the single-frame read above
+                total_reads += burst
+                ok = read.text == cap.text
+                burst_exact += ok
             confs.append(read.confidence)
-            if read.confidence >= config.MIN_PLATE_CONFIDENCE:
+            if read.accepted:
                 accepted += 1
                 acc_exact += ok
         results.append(ConditionResult(
@@ -69,11 +89,14 @@ def run(samples: int = 120, seed: int = 2024, conditions=None, verbose: bool = T
             accepted=accepted,
             accepted_accuracy=(acc_exact / accepted) if accepted else 0.0,
             mean_confidence=float(np.mean(confs)),
+            burst_accuracy=(burst_exact / samples) if burst > 1 else 0.0,
         ))
         if verbose:
             r = results[-1]
-            print(f"  {cond:12} plate {r.plate_accuracy:6.1%}   char {r.char_accuracy:6.1%}   "
-                  f"accepted {r.accepted:4}/{samples}  of which {r.accepted_accuracy:6.1%}")
+            extra = f"   burst({burst}) {r.burst_accuracy:6.1%}" if burst > 1 else ""
+            print(f"  {cond:12} plate {r.plate_accuracy:6.1%}   char {r.char_accuracy:6.1%}"
+                  f"{extra}   accepted {r.accepted:4}/{samples}  of which "
+                  f"{r.accepted_accuracy:6.1%}")
 
     overall = ConditionResult(
         condition="OVERALL", samples=samples * len(conditions),
@@ -84,15 +107,42 @@ def run(samples: int = 120, seed: int = 2024, conditions=None, verbose: bool = T
             [r.accepted_accuracy for r in results],
             weights=[max(r.accepted, 1e-9) for r in results])),
         mean_confidence=float(np.mean([r.mean_confidence for r in results])),
+        burst_accuracy=float(np.mean([r.burst_accuracy for r in results])),
     )
     elapsed = time.time() - t0
     if verbose:
+        extra = f"   burst({burst}) {overall.burst_accuracy:6.1%}" if burst > 1 else ""
         print(f"\n  {'OVERALL':12} plate {overall.plate_accuracy:6.1%}   "
-              f"char {overall.char_accuracy:6.1%}   "
+              f"char {overall.char_accuracy:6.1%}{extra}   "
               f"accepted-read accuracy {overall.accepted_accuracy:6.1%}")
         print(f"  {total_reads} reads in {elapsed:.1f}s "
               f"({total_reads/max(elapsed,1e-9):.1f} plates/s single-threaded)")
     return results, overall, elapsed
+
+
+def run_layouts(samples: int = 60, seed: int = 7, verbose: bool = True):
+    """Accuracy per plate layout and surface condition.
+
+    The headline number is measured on the mix that is actually on the road.
+    This breaks it out, because a filthy two-row motorcycle plate is a different
+    problem from a clean single-row one, and an average hides which is weak.
+    """
+    eng = ocr.engine()
+    out = {}
+    for name, kw in (("one row, clean", dict(two_row=False, fault="clean")),
+                     ("one row, dirty", dict(two_row=False, fault="dirty")),
+                     ("one row, damaged", dict(two_row=False, fault="damaged")),
+                     ("two rows", dict(two_row=True, fault="clean"))):
+        rng = random.Random(seed)
+        ok = 0
+        for i in range(samples):
+            cap = plates.capture(None, plates.CONDITIONS[i % len(plates.CONDITIONS)],
+                                 rng, **kw)
+            ok += eng.read(cap.image).text == cap.text
+        out[name] = ok / samples
+        if verbose:
+            print(f"  {name:22} {ok}/{samples}  ({out[name]:.0%})")
+    return out
 
 
 def run_scenes(samples: int = 40, seed: int = 99, verbose: bool = True):
@@ -133,15 +183,24 @@ def main():
     ap.add_argument("--json", type=str, default="", help="write results to this path")
     ap.add_argument("--scenes", type=int, default=0,
                     help="also measure the whole-frame path on N composited scenes")
+    ap.add_argument("--layouts", type=int, default=0,
+                    help="also break accuracy down by plate layout, N plates each")
+    ap.add_argument("--burst", type=int, default=1,
+                    help="frames per vehicle; >1 also measures the fused path the "
+                         "platform runs (config.BURST_FRAMES is the deployed value)")
     args = ap.parse_args()
 
     print(f"GodsEye ANPR benchmark - {args.samples} plates x {len(plates.CONDITIONS)} conditions\n")
-    results, overall, elapsed = run(args.samples, args.seed)
+    results, overall, elapsed = run(args.samples, args.seed, burst=args.burst)
+    layouts = None
+    if args.layouts:
+        print("\n  by plate layout:")
+        layouts = run_layouts(args.layouts, args.seed)
     scenes = run_scenes(args.scenes, args.seed) if args.scenes else None
     if args.json:
         payload = {"conditions": [asdict(r) for r in results], "overall": asdict(overall),
                    "elapsed_s": elapsed, "samples_per_condition": args.samples,
-                   "scenes": scenes}
+                   "burst_frames": args.burst, "scenes": scenes, "layouts": layouts}
         with open(args.json, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2)
         print(f"\nwrote {args.json}")

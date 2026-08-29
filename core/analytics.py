@@ -225,15 +225,38 @@ def heatmap(minutes: float = config.DEFAULT_WINDOW_MIN, end: float | None = None
             continue
         # congestion multiplies the heat: slow, busy roads should glow hottest
         w = float(r.vehicles) * min(float(r.congestion_ratio), 3.0) / samples_per_link
-        for i in range(samples_per_link):
-            f = i / (samples_per_link - 1)
-            seg = f * (len(line) - 1)
-            k = min(int(seg), len(line) - 2)
-            t = seg - k
-            lat = line[k][0] + t * (line[k + 1][0] - line[k][0])
-            lon = line[k][1] + t * (line[k + 1][1] - line[k][1])
+        for lat, lon in _sample_along(line, samples_per_link):
             pts.append({"lat": lat, "lon": lon, "weight": w, "kind": "link", "label": r.name})
     return pd.DataFrame(pts)
+
+
+def _sample_along(line, n: int):
+    """n points spaced evenly *by distance* along a polyline.
+
+    Sampling by vertex index instead would bunch the heat wherever a road has
+    closely-spaced shape points, which is exactly where the road bends.
+    """
+    from core.network import haversine_km
+
+    seg = [haversine_km(a[0], a[1], b[0], b[1]) for a, b in zip(line, line[1:])]
+    total = sum(seg)
+    if total <= 0:
+        return [line[0]] * n
+    cum, acc = [0.0], 0.0
+    for d in seg:
+        acc += d
+        cum.append(acc)
+    out = []
+    for i in range(n):
+        target = total * (i / max(n - 1, 1))
+        k = 0
+        while k < len(seg) - 1 and cum[k + 1] < target:
+            k += 1
+        span = max(cum[k + 1] - cum[k], 1e-9)
+        t = (target - cum[k]) / span
+        out.append((line[k][0] + t * (line[k + 1][0] - line[k][0]),
+                    line[k][1] + t * (line[k + 1][1] - line[k][1])))
+    return out
 
 
 def flow_trend(hours: float = 3.0, bucket_min: float = 5.0, end: float | None = None) -> pd.DataFrame:

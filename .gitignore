@@ -6,3 +6,4 @@ data/*.db-shm
 models/*.joblib
 .venv/
 .streamlit/
+.ua/

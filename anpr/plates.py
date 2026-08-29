@@ -31,10 +31,16 @@ STATE_CODES = [
 ]
 SERIES_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ"   # I and O are not issued in series
 
-CONDITIONS = [
-    "clean", "night", "glare", "rain", "motion_blur",
-    "angled", "dirty", "damaged", "low_res", "mixed",
-]
+# The capture conditions are now camera scenarios: a mounting, an exposure and
+# the weather, run through anpr/camera.py in physical order. The old flat list
+# ("glare", "rain", "low_res") described filters; these describe sites.
+from anpr import camera as _camera            # noqa: E402  (cycle-free: camera imports nothing here)
+
+CONDITIONS = list(_camera.SCENARIOS)
+
+# Grime and damage live on the plate, not in the camera, so they compose with
+# any scenario: a filthy plate can also be a night shot in the rain.
+SURFACE_FAULTS = ["clean", "dirty", "damaged"]
 
 # Indian plates are supposed to use one prescribed typeface and in practice use
 # whatever the shop had. Training across a spread of condensed and heavy faces is
@@ -60,7 +66,8 @@ def _available_fonts() -> list[str]:
     found = [p for p in _FONT_CANDIDATES if Path(p).exists()]
     import matplotlib  # bundled with the dashboard deps; ships DejaVu everywhere
     mpl = Path(matplotlib.__file__).parent / "mpl-data" / "fonts" / "ttf"
-    for name in ("DejaVuSans-Bold.ttf", "DejaVuSansMono-Bold.ttf", "DejaVuSerif-Bold.ttf"):
+    # sans faces only: no registration plate anywhere in India is set in a serif
+    for name in ("DejaVuSans-Bold.ttf", "DejaVuSansMono-Bold.ttf"):
         if (mpl / name).exists():
             found.append(str(mpl / name))
     return found
@@ -106,8 +113,10 @@ def pretty(plate: str) -> str:
 class PlateImage:
     image: np.ndarray      # uint8 grayscale
     text: str              # ground truth, no spaces
-    condition: str
+    condition: str         # camera scenario
     two_row: bool = False
+    fault: str = "clean"   # what is wrong with the plate itself
+    detail: str = ""       # the rig and exposure, for explaining a failure
 
 
 def split_two_row(text: str) -> tuple[str, str]:
@@ -129,6 +138,11 @@ def render_plate(text: str, *, commercial: bool = False, width: int = 440,
     if ind_strip is None:
         ind_strip = rng.random() < 0.45
     height = int(width * (0.46 if two_row else 0.22))
+    # A real High Security plate is wider to carry the IND band rather than
+    # squeezing the registration into less room, so the band must not cost the
+    # characters their size.
+    if ind_strip:
+        width += max(14, int(width * 0.055)) + 8
     bg = (0, 200, 235) if commercial else (245, 245, 245)   # BGR: yellow / white
     fg = (10, 10, 10)
     img = Image.new("RGB", (width, height), tuple(reversed(bg)))
@@ -297,23 +311,40 @@ def degrade(img: np.ndarray, condition: str, rng: random.Random,
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
+def surface_fault(img: np.ndarray, fault: str, rng: random.Random,
+                  severity: float | None = None) -> np.ndarray:
+    """Apply what has happened to the plate itself, before any camera sees it."""
+    if fault in ("dirty", "damaged"):
+        return degrade(img, fault, rng, severity)
+    return img
+
+
 def capture(text: str | None = None, condition: str | None = None,
-            rng: random.Random | None = None, severity: float | None = None) -> PlateImage:
-    """Simulate one ANPR camera capture: render, degrade, add sensor artefacts."""
+            rng: random.Random | None = None, severity: float | None = None,
+            fault: str | None = None, two_row: bool | None = None) -> PlateImage:
+    """One camera capture of one plate, end to end.
+
+    Renders the plate at high resolution, ages the surface, then shoots it
+    through the camera model for the named scenario. What comes back is the
+    region of interest an ANPR node would hand the reader: small, foreshortened,
+    compressed and digitally zoomed.
+    """
     rng = rng or random
     text = text or random_plate(rng)
     condition = condition or rng.choice(CONDITIONS)
-    img = render_plate(text, commercial=rng.random() < 0.18,
-                       width=rng.choice([320, 380, 440, 520]), rng=rng,
-                       two_row=rng.random() < 0.18)      # bikes, autos, trucks
-    img = degrade(img, condition, rng, severity)
-    # every capture also carries mild sensor noise, defocus and exposure drift
-    img = cv2.GaussianBlur(img, (0, 0), rng.uniform(0.3, 1.1))
-    img = _noise(img, rng.uniform(2, 7), rng)
-    gain, bias = rng.uniform(0.82, 1.18), rng.uniform(-18, 18)
-    img = np.clip(img.astype(np.float32) * gain + bias, 0, 255).astype(np.uint8)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    return PlateImage(image=gray, text=text, condition=condition)
+    if fault is None:
+        fault = rng.choices(SURFACE_FAULTS, [0.72, 0.20, 0.08])[0]
+    if two_row is None:
+        two_row = rng.random() < 0.18          # bikes, autos, trucks
+
+    plate = render_plate(text, commercial=rng.random() < 0.18,
+                         width=rng.choice([640, 760, 900]), rng=rng, two_row=two_row)
+    plate = surface_fault(plate, fault, rng, severity)
+    cap = _camera.scenario(condition, rng)
+    shot = _camera.shoot(plate, cap, rng)
+    gray = cv2.cvtColor(shot, cv2.COLOR_BGR2GRAY)
+    return PlateImage(image=gray, text=text, condition=condition, two_row=two_row,
+                      fault=fault, detail=cap.describe())
 
 
 # --- whole-frame scenes -------------------------------------------------
@@ -369,15 +400,18 @@ def scene(text: str | None = None, condition: str | None = None,
     # the plate itself, degraded then perspective-warped into the scene
     two_row = rng.random() < 0.18
     pw = rng.randint(int(W * 0.16), int(W * 0.34))
-    plate = render_plate(text, commercial=rng.random() < 0.18, width=pw, rng=rng,
+    plate = render_plate(text, commercial=rng.random() < 0.18, width=pw * 3, rng=rng,
                          two_row=two_row)
-    plate = degrade(plate, condition, rng)
+    plate = surface_fault(plate, rng.choices(SURFACE_FAULTS, [0.72, 0.20, 0.08])[0], rng)
+    cam = _camera.scenario(condition, rng)
+    plate = _camera.shoot(plate, cam, rng, canvas_scale=1.05)
+    plate = cv2.resize(plate, (pw, max(8, int(pw * plate.shape[0] / plate.shape[1]))))
     ph = plate.shape[0]
     px = rng.randint(10, max(11, W - pw - 10))
     py = rng.randint(int(H * 0.42), max(int(H * 0.42) + 1, int(H * 0.72) - ph))
 
     src = np.float32([[0, 0], [pw, 0], [pw, ph], [0, ph]])
-    j = 0.05
+    j = 0.02      # the camera model already applied the real perspective
     dst = np.float32([[pw * rng.uniform(0, j), ph * rng.uniform(0, j)],
                       [pw * (1 - rng.uniform(0, j)), ph * rng.uniform(0, j)],
                       [pw * (1 - rng.uniform(0, j)), ph * (1 - rng.uniform(0, j))],

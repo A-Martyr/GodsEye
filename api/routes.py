@@ -13,6 +13,7 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile, WebSocket
 from pydantic import BaseModel, Field
 
 import config
+from anpr import imageio
 from anpr import plates as plate_lib
 from api.state import state
 from core import alerts as alert_rules
@@ -188,19 +189,24 @@ def _png_b64(img: np.ndarray) -> str:
 @router.post("/anpr/read", summary="Read a plate from an uploaded image")
 async def anpr_read(file: UploadFile = File(...)):
     raw = await file.read()
-    arr = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+    arr = imageio.load_bytes(raw)
     if arr is None:
         raise HTTPException(400, "could not decode that image")
     t0 = time.time()
     read = state.get_engine().read_frame(arr)
     return {"filename": file.filename, "ms": round((time.time() - t0) * 1000, 1),
-            **read.as_dict()}
+            "image_size": [int(arr.shape[1]), int(arr.shape[0])], **read.as_dict()}
 
 
 class DemoRequest(BaseModel):
     plate: str | None = None
     condition: str = Field("mixed", examples=plate_lib.CONDITIONS)
     severity: float | None = Field(None, ge=0.0, le=1.0)
+    frames: int = Field(1, ge=1, le=10,
+                        description="Frames the node contributes for this vehicle. "
+                                    "1 reads a single photograph; more reads a burst "
+                                    "and votes the frames by CTC score, which is what "
+                                    "a real ANPR node delivers.")
 
 
 @router.post("/anpr/demo", summary="Synthesise a plate under a condition and read it back")
@@ -208,16 +214,30 @@ def anpr_demo(req: DemoRequest):
     if req.condition not in plate_lib.CONDITIONS:
         raise HTTPException(400, f"condition must be one of {plate_lib.CONDITIONS}")
     rng = random.Random()
-    cap = plate_lib.capture(req.plate.upper().replace(" ", "") if req.plate else None,
-                            req.condition, rng, req.severity)
+    truth = req.plate.upper().replace(" ", "") if req.plate else None
+    caps = [plate_lib.capture(truth, req.condition, rng, req.severity)]
+    # keep every frame on the same plate and the same layout as the first
+    for _ in range(req.frames - 1):
+        caps.append(plate_lib.capture(caps[0].text, req.condition, rng, req.severity,
+                                      two_row=caps[0].two_row))
+    cap = caps[0]
+    eng = state.get_engine()
     t0 = time.time()
-    read, dbg = state.get_engine().read_detailed(cap.image)
+    if req.frames == 1:
+        read, dbg = eng.read_detailed(cap.image)
+        per_frame = [read]
+    else:
+        per_frame = [eng.read(c.image) for c in caps]
+        dbg = eng._last_debug
+        read = eng.fuse_reads(list(per_frame))
     ink = dbg.get("ink")
-    return {"truth": cap.text, "condition": cap.condition,
+    return {"truth": cap.text, "condition": cap.condition, "frames": req.frames,
             "ms": round((time.time() - t0) * 1000, 1),
             "correct": read.text == cap.text,
             "image_png_b64": _png_b64(cap.image),
             "ink_png_b64": _png_b64(ink) if ink is not None else "",
+            "per_frame": [{"text": r.text, "confidence": round(r.confidence, 4),
+                           "correct": r.text == cap.text} for r in per_frame],
             **read.as_dict()}
 
 
@@ -243,13 +263,16 @@ def anpr_benchmark(samples: int = Query(0, ge=0, le=200),
 
 @router.get("/anpr/model", summary="Glyph model card")
 def anpr_model():
-    m = state.get_engine().model
+    eng = state.get_engine()
+    m = eng.model
     from anpr import ocr as ocr_mod
-    return {"classes": len(m.classes), "trained_on_glyphs": m.trained_on,
+    return {"backend": "crnn" if eng.crnn is not None else "classical",
+            "classes": len(m.classes), "trained_on_glyphs": m.trained_on,
             "glyph_val_accuracy": round(m.val_accuracy, 4), "training_stages": m.stages,
             "classifier": type(m.clf).__name__,
             "grammar_patterns": ocr_mod.PATTERNS,
-            "confidence_floor": config.MIN_PLATE_CONFIDENCE}
+            "confidence_floor": (config.MIN_PLATE_CONFIDENCE_CRNN
+                                 if eng.crnn is not None else config.MIN_PLATE_CONFIDENCE)}
 
 
 # --- simulator control --------------------------------------------------

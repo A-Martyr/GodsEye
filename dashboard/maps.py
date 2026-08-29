@@ -19,12 +19,30 @@ BASEMAPS = {
     "Streets": "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json",
 }
 
+# pydeck reads a plain Python string as a per-row data accessor: passing
+# width_units="pixels" compiles to "@@=pixels", deck.gl looks for a column of
+# that name, finds nothing, and the width becomes NaN - which is what turned
+# every road into a viewport-sized wedge and made the text layers invisible.
+# Enum constants must be wrapped so they survive as literals.
+PIXELS = pdk.types.String("pixels")
+
 LEVEL_COLOUR = {"free": [38, 166, 91], "moderate": [232, 186, 40],
                 "heavy": [235, 120, 32], "severe": [222, 47, 52]}
 UNMEASURED = [150, 158, 168]
 
 CAMERA_COLOUR = {"gateway": [126, 87, 194], "junction": [33, 118, 214]}
 LOAD_COLOUR = [[70, 170, 230], [240, 190, 60], [230, 90, 60]]
+
+
+def _num(value, fmt: str) -> str:
+    """Format a number that may be missing — a scripted or partial sighting can
+    carry no speed, and a tooltip is not worth an exception."""
+    try:
+        if value is None or value != value:      # None or NaN
+            return "-"
+        return fmt.format(value)
+    except (TypeError, ValueError):
+        return "-"
 
 
 # --- network ------------------------------------------------------------
@@ -70,7 +88,7 @@ def road_frame(net, flows: pd.DataFrame) -> pd.DataFrame:
 
 def road_layer(roads: pd.DataFrame) -> pdk.Layer:
     return pdk.Layer("PathLayer", data=roads, get_path="path", get_color="colour",
-                     get_width="width", width_units="pixels", width_min_pixels=2,
+                     get_width="width", width_units=PIXELS, width_min_pixels=2,
                      cap_rounded=True, joint_rounded=True, pickable=True,
                      auto_highlight=True)
 
@@ -94,7 +112,8 @@ def camera_frame(density: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
-def camera_layers(cams: pd.DataFrame, labels: bool = True) -> list[pdk.Layer]:
+def camera_layers(cams: pd.DataFrame, labels: bool = True,
+                  max_labels: int = 14) -> list[pdk.Layer]:
     out = [
         # outer ring encodes what kind of site it is, inner disc encodes load
         pdk.Layer("ScatterplotLayer", data=cams, get_position=["lon", "lat"],
@@ -106,9 +125,14 @@ def camera_layers(cams: pd.DataFrame, labels: bool = True) -> list[pdk.Layer]:
                   pickable=True, auto_highlight=True),
     ]
     if labels:
+        # Thirty-five names at city zoom collide into an unreadable mat, and they
+        # collide with the basemap's own labels as well. Name the sites an
+        # operator is watching - the busiest ones - and let the rest speak
+        # through their tooltips.
+        shown = cams.nlargest(max_labels, "count") if "count" in cams else cams
         out.append(pdk.Layer(
-            "TextLayer", data=cams, get_position=["lon", "lat"], get_text="name",
-            get_size=11, size_units="pixels", get_color=[35, 40, 48],
+            "TextLayer", data=shown, get_position=["lon", "lat"], get_text="name",
+            get_size=11, size_units=PIXELS, get_color=[35, 40, 48],
             get_alignment_baseline="'top'", get_text_anchor="'middle'",
             get_pixel_offset=[0, 12], background=True,
             get_background_color=[255, 255, 255, 190], background_padding=[3, 1],
@@ -200,12 +224,12 @@ def trajectory_layers(traj, net) -> tuple[list[pdk.Layer], pd.DataFrame]:
     layers: list[pdk.Layer] = []
     if legs:
         layers.append(pdk.Layer("PathLayer", data=legs, get_path="path", get_color="colour",
-                                get_width="width", width_units="pixels", width_min_pixels=3,
+                                get_width="width", width_units=PIXELS, width_min_pixels=3,
                                 cap_rounded=True, joint_rounded=True, pickable=True,
                                 auto_highlight=True))
     if pts:
         layers.append(pdk.Layer("TextLayer", data=pts, get_position=["lon", "lat"],
-                                get_text="label", get_size=22, size_units="pixels",
+                                get_text="label", get_size=22, size_units=PIXELS,
                                 get_color=[30, 64, 175], pickable=False))
     if not stops.empty:
         layers += [
@@ -214,7 +238,7 @@ def trajectory_layers(traj, net) -> tuple[list[pdk.Layer], pd.DataFrame]:
                       stroked=True, get_line_color=[255, 255, 255, 220],
                       line_width_min_pixels=2, pickable=True, auto_highlight=True),
             pdk.Layer("TextLayer", data=stops, get_position=["lon", "lat"], get_text="order",
-                      get_size=12, size_units="pixels", get_color=[255, 255, 255],
+                      get_size=12, size_units=PIXELS, get_color=[255, 255, 255],
                       get_alignment_baseline="'center'", get_text_anchor="'middle'",
                       pickable=False),
         ]

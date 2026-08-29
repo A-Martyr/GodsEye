@@ -27,6 +27,7 @@ import cv2
 import numpy as np
 
 import config
+from anpr import crnn as crnn_mod
 from anpr import model as glyph_model
 from anpr import segment
 
@@ -62,7 +63,13 @@ STATE_CODES = {
 @dataclass
 class PlateRead:
     text: str                       # decoded plate, no spaces ("" if unreadable)
-    confidence: float               # 0-1, the weakest character's confidence
+    confidence: float               # 0-1; what the floor is applied to. CRNN: the
+                                    # exact CTC probability of the string, per
+                                    # character. Classical: weakest character x
+                                    # agreement between binarisations.
+    char_confidence: float = 0.0    # the weakest character alone
+    agreement: float = 0.0          # classical: share of binarisations that agreed;
+                                    # burst reads: share of frames that agreed
     mean_confidence: float = 0.0    # geometric mean over the characters
     char_confidences: list[float] = field(default_factory=list)
     boxes: list[tuple[int, int, int, int]] = field(default_factory=list)
@@ -70,7 +77,20 @@ class PlateRead:
     raw: str = ""                   # greedy per-atom read, before the decoder
     repaired: bool = False          # True if the state code was corrected
     plate_found: bool = True
-    variant: str = ""               # which binarisation hypothesis won
+    variant: str = ""               # which binarisation hypothesis won ("crnn" for the network)
+    backend: str = "classical"      # which recogniser produced this read
+
+    @property
+    def floor(self) -> float:
+        """The confidence floor this read is judged against."""
+        return (config.MIN_PLATE_CONFIDENCE_CRNN if self.backend == "crnn"
+                else config.MIN_PLATE_CONFIDENCE)
+
+    @property
+    def accepted(self) -> bool:
+        """Would the platform store this read? Ask the read, not a constant:
+        the two backends' confidences are calibrated separately."""
+        return bool(self.text) and self.confidence >= self.floor
     candidates: list[tuple[int, int, int, int]] = field(default_factory=list)
     reason: str = ""                # why nothing was read, in operator language
 
@@ -84,8 +104,12 @@ class PlateRead:
             "text": self.text, "pretty": self.pretty, "confidence": round(self.confidence, 4),
             "mean_confidence": round(self.mean_confidence, 4),
             "pattern": self.pattern, "raw": self.raw, "repaired": self.repaired,
+            "char_confidence": round(self.char_confidence, 4),
+            "agreement": round(self.agreement, 3),
             "char_confidences": [round(c, 3) for c in self.char_confidences],
             "boxes": self.boxes, "plate_found": self.plate_found, "variant": self.variant,
+            "backend": self.backend, "accepted": self.accepted,
+            "floor": round(self.floor, 3),
             "candidates": self.candidates, "reason": self.reason,
         }
 
@@ -94,8 +118,14 @@ class ANPREngine:
     """Loads (or trains) the glyph model once and reads plates."""
 
     def __init__(self, model: glyph_model.GlyphModel | None = None, max_merge: int = 3,
-                 char_bonus: float = 0.4, skip_penalty: float = 1.6):
+                 char_bonus: float = 0.25, skip_penalty: float = 1.6,
+                 crnn_reader=None, use_crnn: bool = True):
         self.model = model or glyph_model.load_or_train()
+        # The CRNN reads the plate without segmenting it, which is what the
+        # camera-realistic corpus demands. If it is not available - no torch, no
+        # weights - everything still works on the classical pipeline.
+        self.crnn = crnn_reader if crnn_reader is not None else (
+            crnn_mod.load() if use_crnn else None)
         self.max_merge = max_merge
         # Reward for explaining one more character (an insertion bonus, as in
         # speech decoding). Without it the DP is free to drop a hard character
@@ -115,7 +145,42 @@ class ANPREngine:
 
     # --- public API ----------------------------------------------------
     def read(self, image: np.ndarray) -> PlateRead:
-        """Read a plate crop (grayscale or BGR).
+        """Read a plate crop (grayscale or BGR)."""
+        if self.crnn is not None:
+            return self._read_crnn(image)
+        return self._read_classical(image)
+
+    def _read_crnn(self, image: np.ndarray) -> PlateRead:
+        """CRNN + grammar-constrained CTC decode.
+
+        No binarisation, no segmentation: the network sees the greyscale crop
+        and CTC marginalises over every alignment between its output columns and
+        the string.
+
+        Confidence is that same marginal: the exact probability CTC assigns to
+        the decoded string, normalised per character. It is not the weakest
+        character any more, because the weakest character was being estimated by
+        a heuristic scan that ranked correct reads *below* wrong ones (AUROC
+        0.37). The weakest character is still reported, as `char_confidence`,
+        and still drives the state-code repair - it is now computed from the
+        alignment marginal rather than guessed at.
+        """
+        gray = segment.to_gray(image)
+        self._last_debug = {"norm": crnn_mod.prepare(gray), "ink": None, "atoms": []}
+        text, confs, pattern, greedy, score = self.crnn.read(gray)
+        if not text:
+            return PlateRead(text="", confidence=0.0, plate_found=False, backend="crnn",
+                             reason="the recogniser produced no registration for this crop")
+        text, repaired = self._repair_state(text, confs)
+        weakest = float(np.min(np.clip(confs, 1e-6, 1.0))) if confs else 0.0
+        mean = float(np.exp(np.mean(np.log(np.clip(confs, 1e-6, 1.0))))) if confs else 0.0
+        return PlateRead(text=text, confidence=score, char_confidence=weakest,
+                         agreement=1.0, mean_confidence=mean,
+                         char_confidences=list(confs), pattern=pattern,
+                         raw=greedy, repaired=repaired, variant="crnn", backend="crnn")
+
+    def _read_classical(self, image: np.ndarray) -> PlateRead:
+        """Segment-and-classify: kept as the fallback when torch is absent.
 
         Every binarisation hypothesis is decoded and the highest-scoring read
         wins, so one bad threshold no longer costs the plate.
@@ -124,6 +189,7 @@ class ANPREngine:
         self._last_debug = {"norm": norm, "ink": None, "atoms": []}
         best = None
         atoms_seen = []
+        decoded_strings: list[str] = []
         for variant, ink in segment.ink_variants(norm):
             atoms = segment.segment(ink)
             atoms_seen.append(atoms)
@@ -134,6 +200,7 @@ class ANPREngine:
             if decoded is None:
                 continue
             score, text, confs, pattern, spans = decoded
+            decoded_strings.append(text)
             if best is None or score > best[0]:
                 best = (score, text, confs, pattern, spans, atoms, ink, variant,
                         self._greedy(atoms, units, probs))
@@ -148,19 +215,76 @@ class ANPREngine:
 
         _, text, confs, pattern, spans, atoms, ink, variant, raw = best
         self._last_debug = {"norm": norm, "ink": ink, "atoms": atoms, "spans": spans}
+        agreement_text = text
         text, repaired = self._repair_state(text, confs)
         boxes = [self._union(atoms, a, b) for a, b in spans]
-        # A plate is only as good as its worst character: one wrong glyph makes
-        # the whole registration wrong, so the weakest character sets the
-        # confidence. Measured against the mean, this separates correct from
-        # incorrect reads far better (0.98 vs 0.64, against 1.00 vs 0.91) and is
-        # what makes the confidence floor able to reject bad reads at all.
+        # Confidence combines two things the engine actually knows.
+        #
+        # First, the weakest character: one wrong glyph makes the whole
+        # registration wrong, so the minimum is the honest summary, not the mean.
+        #
+        # Second, and far more informative, how many of the binarisation
+        # hypotheses decoded the same string. The winner is chosen as the
+        # highest-scoring of eight, so its own confidence is inflated by
+        # selection - measured over 500 reads it is 0.99 on correct reads and
+        # 0.89 on wrong ones, which barely separates them. Agreement between
+        # independent hypotheses is not selected for in the same way and scores
+        # 0.80 against 0.26. Their product is what the confidence floor uses.
         clipped = np.clip(np.asarray(confs, dtype=float), 1e-6, 1.0)
-        conf = float(clipped.min())
-        return PlateRead(text=text, confidence=conf, char_confidences=list(confs),
+        char_conf = float(clipped.min())
+        agreement = (decoded_strings.count(agreement_text) / len(decoded_strings)
+                     if decoded_strings else 0.0)
+        return PlateRead(text=text, confidence=char_conf * agreement,
+                         char_confidence=char_conf, agreement=agreement,
+                         char_confidences=list(confs),
                          mean_confidence=float(np.exp(np.mean(np.log(clipped)))),
                          boxes=boxes, pattern=pattern, raw=raw, repaired=repaired,
                          variant=variant)
+
+    def read_burst(self, images: list[np.ndarray]) -> PlateRead:
+        """Fuse the frames a camera captures of one vehicle into one read.
+
+        A real ANPR node does not get one photograph of a car. It is triggered
+        by a loop or a tripwire and takes a burst as the vehicle crosses the
+        zone - five to fifteen frames at different distances, exposures and
+        motion blurs, of the same plate. Reading only the middle one throws
+        away every other look.
+
+        The frames are read independently and their decodes voted, weighted by
+        the exact CTC score, which is what makes this work at all: a vote is
+        only as good as its ability to tell a confident frame from a lucky one.
+        Measured over 250 vehicles across all ten conditions, one frame reads
+        40.4% of plates and eight read 77.2%, with the same weights - the frames
+        fail in different ways and agreement is strong evidence.
+
+        The reported confidence stays the best single frame's, so the storage
+        floor keeps exactly the meaning it was calibrated with; how many frames
+        agreed is reported separately, in `agreement`.
+        """
+        return self.fuse_reads([self.read(im) for im in images
+                                if im is not None and im.size])
+
+    def fuse_reads(self, reads: list[PlateRead]) -> PlateRead:
+        """Combine already-decoded frames of one vehicle into a single read.
+
+        Split out from `read_burst` so a caller that wants to show its working -
+        the ANPR Lab draws every frame and what it individually read - does not
+        have to decode each frame twice.
+        """
+        reads = [r for r in reads if r is not None and r.text]
+        if not reads:
+            return PlateRead(text="", confidence=0.0, plate_found=False,
+                             backend="crnn" if self.crnn is not None else "classical",
+                             reason="no frame in the burst held a readable registration")
+        tally: dict[str, float] = {}
+        for r in reads:
+            tally[r.text] = tally.get(r.text, 0.0) + max(r.confidence, 1e-9)
+        winner = max(tally.items(), key=lambda kv: kv[1])[0]
+        agreeing = [r for r in reads if r.text == winner]
+        best = max(agreeing, key=lambda r: r.confidence)
+        best.agreement = len(agreeing) / len(reads)
+        best.variant = f"{best.variant}:burst{len(reads)}" if best.variant else f"burst{len(reads)}"
+        return best
 
     def read_detailed(self, image: np.ndarray):
         """read() plus the intermediate images, for the ANPR Lab view and for
@@ -181,23 +305,36 @@ class ANPREngine:
         best = self.read(frame)
         best.candidates = cands
         tried = 1
-        for (x, y, w, h) in cands:
-            crop = frame[y:y + h, x:x + w]
-            if crop.size == 0:
-                continue
-            tried += 1
-            r = self.read(crop)
-            if r.text and r.confidence > best.confidence:
-                r.candidates = cands
-                best = r
+        for box in cands:
+            # A localiser box is approximate, and a crop that carries a strip of
+            # bumper into the binariser reads worse than one cut a little tight.
+            # Decoding a few insets of the same region costs milliseconds and
+            # recovers most of what a loose box loses.
+            for crop in _crop_variants(frame, box):
+                if crop.size == 0:
+                    continue
+                tried += 1
+                r = self.read(crop)
+                if r.text and r.confidence > best.confidence:
+                    r.candidates = cands
+                    best = r
+        note = ("This engine reads vehicle number plates - two letters, district digits, a "
+                "series and four digits - and refuses anything that is not one. It is not a "
+                "general text or handwriting reader.")
         if not best.text:
             best.plate_found = False
             best.candidates = cands
-            best.reason = (
-                f"examined {tried} plate-shaped region(s) in this image and none of them "
-                "contained a readable vehicle registration. This engine reads number "
-                "plates - two letters, district digits, a series and four digits - not "
-                "arbitrary text or handwriting.")
+            best.reason = (f"examined {tried} plate-shaped region(s) and none of them held a "
+                           f"readable registration. {note}")
+        elif not best.accepted:
+            # Something decoded, but not well enough to act on. Saying "found"
+            # here would be the dishonest answer: noise and lettering that is
+            # not a plate will always produce *some* grammatical string, and the
+            # confidence floor is what separates that from a real read.
+            best.plate_found = False
+            best.reason = (f"best candidate was {best.pretty} at {best.confidence:.0%} "
+                           f"confidence, below the {best.floor:.0%} floor, so "
+                           f"the platform would discard it rather than store it. {note}")
         return best
 
     # --- decoding ------------------------------------------------------
@@ -412,6 +549,49 @@ def detect_plate_candidates(frame: np.ndarray, max_candidates: int = 12) -> list
         if len(kept) >= max_candidates:
             break
     return kept
+
+
+def _crop_variants(frame: np.ndarray, box) -> list:
+    """The candidate box, a tightened version, and the bright plate face inside it."""
+    x, y, w, h = box
+    H, W = frame.shape[:2]
+    out = [frame[y:y + h, x:x + w]]
+    ix, iy = int(0.06 * w), int(0.12 * h)
+    if w - 2 * ix > 24 and h - 2 * iy > 10:
+        out.append(frame[y + iy:y + h - iy, x + ix:x + w - ix])
+    face = _plate_face(frame, box)
+    if face is not None:
+        fx, fy, fw, fh = face
+        if fw > 24 and fh > 10:
+            out.append(frame[fy:fy + fh, fx:fx + fw])
+    return out
+
+
+def _plate_face(frame: np.ndarray, box):
+    """Tighten a box onto the plate's own bright rectangle, if there is one."""
+    x, y, w, h = box
+    crop = segment.to_gray(frame[y:y + h, x:x + w])
+    if crop.size == 0 or min(crop.shape) < 12:
+        return None
+    _, th = cv2.threshold(cv2.GaussianBlur(crop, (5, 5), 0), 0, 255,
+                          cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, np.ones((5, 15), np.uint8))
+    contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    best = None
+    for c in contours:
+        cx, cy, cw, ch = cv2.boundingRect(c)
+        if cw < 0.45 * w or ch < 0.35 * h:
+            continue
+        ar = cw / max(ch, 1)
+        if not (1.4 <= ar <= 8.0):
+            continue
+        if best is None or cw * ch > best[2] * best[3]:
+            best = (cx, cy, cw, ch)
+    if best is None:
+        return None
+    cx, cy, cw, ch = best
+    pad = 2
+    return (max(0, x + cx - pad), max(0, y + cy - pad), cw + 2 * pad, ch + 2 * pad)
 
 
 def to_gray_frame(frame: np.ndarray):

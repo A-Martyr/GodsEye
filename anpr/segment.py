@@ -99,7 +99,14 @@ def _clear_frame(mask: np.ndarray) -> np.ndarray:
         if not (x <= 1 or y <= 1 or x + bw >= w - 1 or y + bh >= h - 1):
             continue
         fill = area / max(bw * bh, 1)
-        if (bw > 0.80 * w and fill < 0.45) or bh >= 0.97 * h or (bw > 0.35 * w and bh < 0.20 * h):
+        frame_like = ((bw > 0.80 * w and fill < 0.45)      # the surrounding border
+                      or bh >= 0.97 * h                     # a full-height edge
+                      or (bw > 0.35 * w and bh < 0.20 * h))  # a top or bottom rail
+        # The blue IND band of a High Security plate: a solid, tall, narrow bar
+        # against one edge. It is not part of the registration, and left in it
+        # costs ten points of accuracy by eating the first character.
+        band_like = bh > 0.70 * h and bw < 0.22 * w and fill > 0.70
+        if frame_like or band_like:
             out[labels == i] = 0
     return out
 
@@ -148,6 +155,27 @@ def ink_variants(norm: np.ndarray):
                                  cv2.THRESH_BINARY_INV, 31, 14)
     yield "adaptive", _post(adap)
 
+    # Three more aimed at the low-contrast case - a plate under a film of dust,
+    # where the ink and the background are only a few grey levels apart. Each
+    # earns its place on the benchmark: together they lift the dirty and mixed
+    # conditions without costing anything on the clean ones.
+    lo, hi = np.percentile(norm, [4, 96])
+    if hi > lo + 4:
+        stretched = np.clip((norm.astype(np.float32) - lo) * 255.0 / (hi - lo),
+                            0, 255).astype(np.uint8)
+        _, ink = cv2.threshold(cv2.GaussianBlur(stretched, (3, 3), 0), 0, 255,
+                               cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+        yield "stretch", _post(ink)
+
+    tight = flatten_illumination(norm, 9)     # kernel just wider than a stroke
+    _, ink = cv2.threshold(cv2.GaussianBlur(tight, (3, 3), 0), 0, 255,
+                           cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    yield "flat9", _post(ink)
+
+    yield "mean41", _post(cv2.adaptiveThreshold(
+        cv2.GaussianBlur(norm, (3, 3), 0), 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+        cv2.THRESH_BINARY_INV, 41, 8))
+
 
 def _post(ink: np.ndarray) -> np.ndarray:
     ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
@@ -179,8 +207,7 @@ def segment(ink: np.ndarray) -> list[tuple[int, int, int, int]]:
 
     out: list[tuple[int, int, int, int]] = []
     for row in _rows(boxes, h):
-        row = _drop_odd_heights(row)
-        row = _split_merged(row, ink)
+        row = _split_merged(_drop_odd_heights(row), ink)
         row.sort(key=lambda b: b[0])
         out.extend(row)
     return out[:20]
@@ -224,18 +251,22 @@ def _split_merged(boxes, ink):
 
     Deliberately aggressive: these boxes are *atoms*, not characters. The OCR
     decoder can merge neighbouring atoms back into one character but can never
-    invent a cut that was not offered, so over-cutting is the cheap error.""" 
+    invent a cut that was not offered, so over-cutting is the cheap error.
+    """
     if not boxes:
-        return boxes
+        return []
     # Estimate a single character's width from the boxes that already look like
     # one character (taller than wide); merged blobs must not skew the median.
     singles = [b[2] for b in boxes if b[2] <= 0.95 * b[3]]
     widths = sorted(singles or [b[2] for b in boxes])
     wmed = widths[len(widths) // 2]
     out = []
-    for x, y, bw, bh in boxes:
+    for (x, y, bw, bh) in sorted(boxes, key=lambda b: b[0]):
         k = min(4, int(round(bw / max(wmed, 1))))
-        if k < 2 or bw < 1.25 * wmed:
+        # Only cut a blob that is far wider than one character. M and W are
+        # legitimately wide, and cutting one produces two entirely convincing
+        # letters that the decoder has no way to argue with.
+        if k < 2 or bw < 1.4 * wmed or bw / max(bh, 1) < 1.15:
             out.append((x, y, bw, bh))
             continue
         strip = ink[y:y + bh, x:x + bw]

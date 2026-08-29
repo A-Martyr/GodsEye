@@ -27,7 +27,7 @@ import joblib
 import numpy as np
 
 import config
-from anpr import ocr, plates, segment
+from anpr import camera, ocr, plates, segment
 
 
 @dataclass
@@ -61,34 +61,72 @@ def _plate_text(rng: random.Random) -> str:
     return text
 
 
+def bootstrap_capture(text: str, rng: random.Random):
+    """A capture from a camera doing its job well.
+
+    Not a clean render - it still goes through the whole camera model, so the
+    crops carry perspective, compression and sensor noise. It is simply a good
+    site on a good day: near lane, long lens, fast shutter, low gain. These are
+    the captures whose segmentation can be trusted to label itself.
+    """
+    rig = camera.CameraRig(height_m=rng.uniform(5.0, 7.0),
+                           distance_m=rng.uniform(10.0, 17.0),
+                           lateral_m=rng.uniform(-2.5, 2.5),
+                           focal_px=rng.uniform(5000.0, 7200.0))
+    cap = camera.Capture(rig=rig, weather=camera.Weather(),
+                         exposure_s=rng.choice([1 / 2000, 1 / 1000]), iso=rng.choice([100, 200]),
+                         speed_kmph=rng.uniform(20, 45), ambient=1.0,
+                         jpeg_quality=rng.randint(84, 95),
+                         digital_zoom=rng.uniform(1.0, 1.4),
+                         defocus_px=rng.uniform(0.2, 0.55))
+    plate = plates.render_plate(text, commercial=rng.random() < 0.18,
+                                width=rng.choice([640, 760, 900]), rng=rng,
+                                two_row=rng.random() < 0.18)
+    if rng.random() < 0.22:
+        plate = plates.surface_fault(plate, rng.choice(["dirty", "damaged"]), rng, 0.45)
+    return camera.shoot(plate, cap, rng)
+
+
 def build_stage1(n_plates: int = 3000, seed: int = 7, verbose: bool = True):
-    """Segmentation-aligned crops: keep plates the segmenter cut cleanly."""
+    """Segmentation-aligned crops from bootstrap captures."""
     rng = random.Random(seed)
     X, y = [], []
     kept = 0
     for i in range(n_plates):
         text = _plate_text(rng)
-        cond = plates.CONDITIONS[i % len(plates.CONDITIONS)]
-        cap = plates.capture(text, cond, rng)
-        _, ink, boxes, feats = segment.plate_glyphs(cap.image)
+        image = bootstrap_capture(text, rng)
+        _, ink, boxes, feats = segment.plate_glyphs(image)
         if len(boxes) != len(text):
             continue
         kept += 1
         X.extend(feats)
         y.extend(list(text))
         if verbose and (i + 1) % 750 == 0:
-            print(f"  stage 1: {i+1}/{n_plates} plates, {kept} aligned, {len(y)} glyphs")
+            print(f"  stage 1: {i+1}/{n_plates} bootstrap plates, {kept} aligned, "
+                  f"{len(y)} glyphs")
     return X, y
 
 
-def build_stage2(eng, n_plates: int = 2200, seed: int = 21, verbose: bool = True):
-    """Decoder-aligned crops harvested from correctly-read hard plates."""
+ORDINARY_POOL = (["daylight"] * 5 + ["night_ir"] * 4 + ["high_speed"] * 2 +
+                 ["monsoon"] * 2 + ["fog"] * 2 + ["night_glare"] * 2 +
+                 ["far_lane"] + ["dusk_highiso"] + ["cheap_cam"])
+HARD_POOL = (["far_lane"] * 3 + ["cheap_cam"] * 3 + ["dusk_highiso"] * 3 +
+             ["storm"] * 3 + ["night_glare"] * 3 + ["monsoon"] * 2 +
+             ["fog"] * 2 + ["high_speed"] * 2 + ["night_ir"] + ["daylight"])
+
+
+def build_stage2(eng, n_plates: int = 2200, seed: int = 21, verbose: bool = True,
+                 pool: list[str] | None = None, stage: int = 2):
+    """Decoder-aligned crops harvested from plates this engine read correctly.
+
+    Run once against the ordinary mix, then again with the improved engine
+    against the hard mix: the second pass reaches captures the first could not
+    decode, which is the whole point of doing it twice.
+    """
     rng = random.Random(seed)
     X, y = [], []
     kept = 0
-    # weight towards the conditions stage 1 under-samples
-    pool = (["dirty"] * 4 + ["damaged"] * 3 + ["angled"] * 3 + ["mixed"] * 3 +
-            ["glare"] * 2 + ["motion_blur"] * 2 + ["rain", "night", "low_res", "clean"])
+    pool = pool or HARD_POOL
     for i in range(n_plates):
         text = _plate_text(rng)
         cap = plates.capture(text, rng.choice(pool), rng)
@@ -101,8 +139,38 @@ def build_stage2(eng, n_plates: int = 2200, seed: int = 21, verbose: bool = True
             X.append(segment.glyph(ink, ocr.union_box(atoms, a, b)))
             y.append(ch)
         if verbose and (i + 1) % 500 == 0:
-            print(f"  stage 2: {i+1}/{n_plates} plates, {kept} decoded correctly, {len(y)} glyphs")
+            print(f"  stage {stage}: {i+1}/{n_plates} plates, {kept} decoded correctly, "
+                  f"{len(y)} glyphs")
     return X, y
+
+
+def _jitter(X, y, copies: int = 2, seed: int = 0):
+    """Extra copies of each crop, shifted and scaled a little.
+
+    Harvested crops are the ones that resemble real captures, but there are far
+    fewer of them than bootstrap crops, so the classifier ends up fitted to the
+    easy distribution. Held-out glyph accuracy said 97.4% while daylight plates
+    read at 40% - and 0.40 over ten characters implies about 91% per character,
+    which is the gap between the two distributions. Jittering the realistic
+    crops rebalances the mix without another hour of harvesting.
+    """
+    import cv2
+
+    g = int(np.sqrt(len(X[0]))) if len(X) else segment.G
+    rng = np.random.default_rng(seed)
+    outX, outY = list(X), list(y)
+    for _ in range(copies):
+        for feat, label in zip(X, y):
+            img = np.asarray(feat, np.float32).reshape(g, g)
+            dx, dy = rng.uniform(-1.2, 1.2, 2)
+            scale = rng.uniform(0.94, 1.06)
+            m = cv2.getRotationMatrix2D((g / 2, g / 2), rng.uniform(-4, 4), scale)
+            m[:, 2] += (dx, dy)
+            warped = cv2.warpAffine(img, m, (g, g), flags=cv2.INTER_LINEAR,
+                                    borderValue=0.0)
+            outX.append(warped.ravel())
+            outY.append(label)
+    return outX, outY
 
 
 def _fit(X, y, seed: int, verbose: bool):
@@ -126,14 +194,13 @@ def _fit(X, y, seed: int, verbose: bool):
     return clf, acc, len(Xtr)
 
 
-def train(n_plates: int = 3000, seed: int = 7, self_train: bool = True,
-          harvest_plates: int = 2200, verbose: bool = True) -> GlyphModel:
+def train(n_plates: int = 4000, seed: int = 7, self_train: bool = True,
+          harvest_plates: int = 3000, verbose: bool = True) -> GlyphModel:
     from anpr.ocr import ANPREngine
 
     t0 = time.time()
     if verbose:
-        print(f"[glyph] stage 1: synthesising {n_plates} plates across "
-              f"{len(plates.CONDITIONS)} conditions ...")
+        print(f"[glyph] stage 1: {n_plates} bootstrap captures (good site, good day) ...")
     X, y = build_stage1(n_plates, seed, verbose)
     clf, acc, n = _fit(X, y, seed, verbose)
     model = GlyphModel(clf=clf, classes=np.array(clf.classes_), trained_on=n,
@@ -142,17 +209,35 @@ def train(n_plates: int = 3000, seed: int = 7, self_train: bool = True,
         return model
 
     if verbose:
-        print(f"[glyph] stage 2: harvesting decoder-aligned crops from {harvest_plates} hard plates ...")
-    X2, y2 = build_stage2(ANPREngine(model), harvest_plates, seed + 14, verbose)
+        print(f"[glyph] stage 2: harvesting from {harvest_plates} ordinary captures ...")
+    X2, y2 = build_stage2(ANPREngine(model), harvest_plates, seed + 14, verbose,
+                          pool=ORDINARY_POOL, stage=2)
     if len(X2) < 500:
         print("[glyph] stage 2 harvested too little - keeping the stage 1 model")
         return model
-    clf, acc, n = _fit(X + X2, y + y2, seed, verbose)
+    X2j, y2j = _jitter(X2, y2, copies=2, seed=seed)
+    clf, acc, n = _fit(X + X2j, y + y2j, seed, verbose)
+    model = GlyphModel(clf=clf, classes=np.array(clf.classes_), trained_on=n,
+                       val_accuracy=acc, stages=2)
+
+    # Stage 3: the improved engine can read captures stage 2 could not, so a
+    # second harvest reaches further into the hard scenarios.
     if verbose:
-        print(f"[glyph] done in {time.time()-t0:.1f}s "
-              f"({len(X)} stage-1 + {len(X2)} stage-2 glyphs)")
+        print(f"[glyph] stage 3: harvesting from {harvest_plates} hard captures ...")
+    X3, y3 = build_stage2(ANPREngine(model), harvest_plates, seed + 28, verbose,
+                          pool=HARD_POOL, stage=3)
+    if len(X3) < 400:
+        if verbose:
+            print("[glyph] stage 3 harvested too little - keeping the stage 2 model")
+        return model
+    X3j, y3j = _jitter(X3, y3, copies=3, seed=seed + 1)
+    clf, acc, n = _fit(X + X2j + X3j, y + y2j + y3j, seed, verbose)
+    if verbose:
+        print(f"[glyph] done in {time.time()-t0:.1f}s ({len(X)} bootstrap + "
+              f"{len(X2j)} ordinary + {len(X3j)} hard glyphs after jitter; "
+              f"{len(X2)} + {len(X3)} harvested)")
     return GlyphModel(clf=clf, classes=np.array(clf.classes_), trained_on=n,
-                      val_accuracy=acc, stages=2)
+                      val_accuracy=acc, stages=3)
 
 
 def save(model: GlyphModel, path=None) -> None:
@@ -173,15 +258,25 @@ def load_or_train(force: bool = False, **kw) -> GlyphModel:
     return model
 
 
-if __name__ == "__main__":
+def main() -> None:
     import argparse
 
     ap = argparse.ArgumentParser(description="Train the GodsEye glyph classifier")
-    ap.add_argument("--plates", type=int, default=3000)
-    ap.add_argument("--harvest", type=int, default=2200)
+    ap.add_argument("--plates", type=int, default=4000)
+    ap.add_argument("--harvest", type=int, default=3000)
     ap.add_argument("--no-self-train", action="store_true")
     ap.add_argument("--seed", type=int, default=7)
     args = ap.parse_args()
     m = train(args.plates, args.seed, not args.no_self_train, args.harvest)
     save(m)
     print(f"saved -> {config.GLYPH_MODEL}  (stages {m.stages}, glyph val acc {m.val_accuracy:.4f})")
+
+
+if __name__ == "__main__":
+    # Run through the canonical module, not this file's __main__ copy of it.
+    # Pickle stores a class by module path, so a GlyphModel built here would be
+    # saved as __main__.GlyphModel and would fail to load in every other
+    # process - which silently costs a five-minute retrain each time.
+    import anpr.model
+
+    anpr.model.main()

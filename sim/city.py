@@ -9,9 +9,11 @@ lands in the database is therefore what the engine read - errors included -
 which is the point: the trajectory and analytics layers have to cope with
 imperfect reads exactly as they would in deployment.
 
-Running every capture through the engine costs ~75 ms, so live mode caps how
-many are decoded per tick and falls back to a calibrated error model for the
-rest; `ocr_mode` on each sighting records which path produced it.
+Each camera contributes a *burst* per vehicle, not a single frame, which is what
+a loop-triggered ANPR node actually does; the frames are read independently and
+voted. That costs roughly `BURST_FRAMES` x 75 ms per vehicle, so live mode caps
+how many frames are decoded per tick and falls back to a calibrated error model
+for the rest; `ocr_mode` on each sighting records which path produced it.
 """
 from __future__ import annotations
 
@@ -49,11 +51,21 @@ HOUR_PROFILE = [0.18, 0.12, 0.10, 0.11, 0.16, 0.32, 0.58, 0.86, 1.00, 0.94,
                 0.78, 0.72, 0.74, 0.76, 0.74, 0.79, 0.90, 1.00, 0.98, 0.84,
                 0.62, 0.48, 0.36, 0.25]
 
-# Plate-read accuracy per capture condition, measured by anpr.benchmark. Used
-# only for captures the live loop cannot afford to decode for real.
+# Plate-read accuracy per capture condition, measured by anpr.benchmark on the
+# burst path the platform actually runs (config.BURST_FRAMES frames per vehicle,
+# fused by CTC score). Used only for captures the live loop cannot afford to
+# decode for real.
 CONDITION_ACCURACY = {
-    "clean": 1.00, "night": 1.00, "glare": 0.98, "rain": 1.00, "motion_blur": 0.95,
-    "angled": 0.86, "dirty": 0.71, "damaged": 0.77, "low_res": 1.00, "mixed": 0.85,
+    "daylight": 0.98,
+    "night_ir": 1.00,
+    "night_glare": 0.82,
+    "monsoon": 0.98,
+    "fog": 0.93,
+    "high_speed": 0.87,
+    "far_lane": 0.57,
+    "dusk_highiso": 0.88,
+    "cheap_cam": 0.27,
+    "storm": 0.00,
 }
 
 
@@ -105,7 +117,7 @@ class CitySimulator:
         self.cameras = list(self.net.cameras)
         self.gateways = self.net.gateways or self.cameras
         self.stats = {"captures": 0, "reads_ocr": 0, "reads_modelled": 0,
-                      "dropped_low_confidence": 0, "misreads": 0}
+                      "frames_decoded": 0, "dropped_low_confidence": 0, "misreads": 0}
         for _ in range(fleet_size):
             self.fleet.append(self._spawn(time.time()))
 
@@ -154,20 +166,30 @@ class CitySimulator:
         return base * rush * self.rng.uniform(0.85, 1.25)
 
     def _condition(self, ts: float) -> str:
-        """Capture condition for this crossing: darkness and weather dominate."""
+        """Which camera scenario this crossing is.
+
+        A site is what it is - the mounting and the lens do not change - but the
+        hour and the weather decide which regime it is working in, and roughly a
+        fifth of crossings are on the far carriageway or through an older camera.
+        """
         hour = time.localtime(ts).tm_hour
         night = hour >= 19 or hour <= 5
+        dusk = hour in (18, 19, 6)
         wet = self.weather == "rain" or (self.weather == "auto" and self.rng.random() < 0.12)
         r = self.rng.random()
-        if wet and r < 0.55:
-            return "rain"
-        if night and r < 0.55:
-            return "night"
-        if r < 0.34:
-            return "clean"
+        if wet:
+            return "storm" if r < 0.15 else "monsoon"
+        if night:
+            return self.rng.choices(["night_ir", "night_glare", "cheap_cam"],
+                                    [0.62, 0.28, 0.10])[0]
+        if dusk:
+            return self.rng.choices(["dusk_highiso", "night_ir", "daylight"],
+                                    [0.55, 0.20, 0.25])[0]
+        if self.weather == "auto" and r < 0.07:
+            return "fog"
         return self.rng.choices(
-            ["motion_blur", "angled", "glare", "low_res", "dirty", "damaged", "mixed"],
-            [0.24, 0.20, 0.14, 0.16, 0.10, 0.06, 0.10])[0]
+            ["daylight", "high_speed", "far_lane", "cheap_cam"],
+            [0.62, 0.16, 0.14, 0.08])[0]
 
     def advance(self, until_ts: float, max_captures: int = 5000) -> list[Capture]:
         """Move every vehicle up to `until_ts`, returning the camera crossings."""
@@ -230,26 +252,52 @@ class CitySimulator:
     def read(self, cap: Capture, use_ocr: bool) -> tuple[str, float, str, str]:
         """-> (plate as read, confidence, ocr mode, winning binarisation variant)"""
         if use_ocr:
-            img = plates.capture(cap.true_plate, cap.condition, self.rng)
-            read = self._engine().read(img.image)
+            # A camera sees a vehicle several times as it crosses the trigger
+            # zone. Reading only one of those frames throws away every other
+            # look at the same plate, and the looks fail independently: over 250
+            # vehicles, one frame reads 40.4% and five read 71.2%.
+            n = max(1, config.BURST_FRAMES)
+            frames = [plates.capture(cap.true_plate, cap.condition, self.rng).image
+                      for _ in range(n)]
+            eng = self._engine()
+            read = eng.read_burst(frames) if n > 1 else eng.read(frames[0])
             self.stats["reads_ocr"] += 1
+            self.stats["frames_decoded"] = self.stats.get("frames_decoded", 0) + n
             if read.text and read.text != cap.true_plate:
                 self.stats["misreads"] += 1
             return read.text, read.confidence, "engine", read.variant
         # calibrated stand-in: same error *rate* as the engine, cheap
         acc = CONDITION_ACCURACY.get(cap.condition, 0.9)
         self.stats["reads_modelled"] += 1
+        # The modelled path has to imitate not just the engine's error *rate* but
+        # its willingness to store: measured on the burst path, the engine keeps
+        # 71.3% of captures and 96.3% of those are right. Solving for the two
+        # store rates that reproduce both numbers at 73.0% accuracy gives 0.94
+        # if the read is correct and 0.10 if it is not. Drawing confidence from a
+        # wide band instead let far too many misreads through, and every stored
+        # misread invents a vehicle that never existed - 260 cars became 932
+        # plates, and trajectory tracking fell apart.
+        floor = config.MIN_PLATE_CONFIDENCE
         if self.rng.random() < acc:
-            return cap.true_plate, self.rng.uniform(0.86, 1.0), "modelled", ""
-        # Wrong reads carry lower confidence, as the engine's do, so the same
-        # share of them falls below the floor and never reaches the database.
-        return (_corrupt(cap.true_plate, self.rng),
-                self.rng.uniform(0.35, 0.88), "modelled", "")
+            store = self.rng.random() < 0.94
+            conf = (self.rng.uniform(floor, 1.0) if store
+                    else self.rng.uniform(0.05, floor * 0.95))
+            return cap.true_plate, conf, "modelled", ""
+        store = self.rng.random() < 0.10          # a misread rarely looks certain
+        conf = (self.rng.uniform(floor, 0.85) if store
+                else self.rng.uniform(0.01, floor * 0.9))
+        return _corrupt(cap.true_plate, self.rng), conf, "modelled", ""
 
     def to_sighting(self, cap: Capture, use_ocr: bool) -> db.Sighting | None:
         plate, conf, mode, variant = self.read(cap, use_ocr)
         self.stats["captures"] += 1
-        if not plate or conf < config.MIN_PLATE_CONFIDENCE:
+        # engine reads are judged by the backend that produced them; modelled
+        # ones by the classical floor they were calibrated against
+        eng = self.engine
+        floor = (config.MIN_PLATE_CONFIDENCE_CRNN
+                 if (mode == "engine" and eng is not None and getattr(eng, "crnn", None))
+                 else config.MIN_PLATE_CONFIDENCE)
+        if not plate or conf < floor:
             # A real ANPR node discards reads it cannot stand behind. So do we —
             # which is why a trajectory can have gaps the operator must bridge.
             self.stats["dropped_low_confidence"] += 1
@@ -268,9 +316,10 @@ class CitySimulator:
         """Advance to `until_ts`, store the sightings, return them with any alerts."""
         conn = conn or db.connect()
         until_ts = until_ts if until_ts is not None else time.time()
-        budget = config.INLINE_OCR_MAX_PER_TICK if ocr_budget is None else ocr_budget
-        if not config.INLINE_OCR:
-            budget = 0
+        # INLINE_OCR_MAX_PER_TICK is a budget of decoded *frames*, so raising
+        # BURST_FRAMES buys accuracy per vehicle rather than more wall clock.
+        frames = config.INLINE_OCR_MAX_PER_TICK if ocr_budget is None else ocr_budget
+        budget = 0 if not config.INLINE_OCR else max(1, frames // max(1, config.BURST_FRAMES))
         caps = self.advance(until_ts)
         sightings, fired = [], []
         for i, cap in enumerate(caps):
@@ -307,11 +356,25 @@ class CitySimulator:
 
     # --- scripted incidents --------------------------------------------
     def inject_clone(self, conn=None, gap_minutes: float = 3.0) -> str:
-        """Same plate at opposite ends of the city minutes apart."""
+        """Same plate at opposite ends of the city minutes apart.
+
+        The vehicle has to be one the network has *not* just seen: the clone rule
+        compares a sighting against the previous sighting of the same plate, so a
+        genuine read landing between the two scripted ones would be the one it
+        measures against, and the implied speed would be ordinary. That was rare
+        when the platform stored a fifth of its captures and is common now it
+        stores four fifths, so the injector picks a quiet plate rather than
+        assuming one.
+        """
         conn = conn or db.connect()
-        v = self.rng.choice(self.fleet)
-        a, b = "CAM-35", "CAM-12"                     # Kona toll and New Town, ~22 km apart
         now = time.time()
+        fleet = list(self.fleet)
+        self.rng.shuffle(fleet)
+        v = next((c for c in fleet
+                  if not db.sightings_for_plate(c.plate, since=now - gap_minutes * 60.0,
+                                                conn=conn)),
+                 fleet[0])
+        a, b = "CAM-35", "CAM-12"                     # Kona toll and New Town, ~22 km apart
         for cam, ts in ((a, now - gap_minutes * 60), (b, now)):
             s = db.Sighting(ts=ts, camera_id=cam, plate=v.plate, confidence=0.93,
                             speed_kmph=48.0, lane=1, heading=90.0, direction="E",
