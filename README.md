@@ -12,6 +12,14 @@ GodsEye is that layer: a plate reader built for bad photographs, a spatial-
 temporal trajectory engine over a GIS camera network, macro traffic analytics
 derived from the same reads, and a real-time alert queue on top of both.
 
+**Where it stands.** The reader is at **73.1%** exact-plate accuracy on the burst
+path it actually runs, and **96.2%** on the reads it is confident enough to store.
+The brief asks for >90% and this does not meet it; §1 reports the measurement per
+condition, says which conditions are information-limited and which are model
+limits, and lists what has already been ruled out as the cause. Every number in
+this document comes from `models/benchmark.json`, which the dashboard renders
+from the same file.
+
 ---
 
 ## Run it
@@ -30,10 +38,11 @@ needs a GPU, an internet connection, or a dataset download. To see the numbers
 behind the accuracy claim, and to check every layer end to end:
 
 ```bash
-python -m anpr.benchmark --samples 100 --scenes 60 --layouts 100 --json models/benchmark.json
+python -m anpr.benchmark --samples 100 --scenes 60 --layouts 100 --burst 5 --json models/benchmark.json
 python -m anpr.camera_sheet                     # see what the camera model produces
 python -m anpr.compare_backends --samples 100   # CRNN vs the classical engine
-python tests.py                                 # end-to-end self-check
+python -m core.repair --hours 6                 # recover refused captures from the network
+python tests.py                                 # end-to-end self-check (58 checks)
 ```
 
 The dashboard reads the database directly, so it works with the API stopped —
@@ -129,19 +138,23 @@ Head to head on identical captures:
 
 | | segment-and-classify | CRNN |
 |---|---|---|
-| daylight | 53% | **74%** |
-| night IR | 48% | **81%** |
-| monsoon | 27% | 58% |
-| fog | 14% | 37% |
-| high speed | 3% | 25% |
-| dusk, high ISO | 4% | 25% |
-| far lane | 1% | 11% |
-| **overall** | **16.4%** | **35.0%** |
-| **per read** | 124 ms | **18 ms** |
+| daylight | 55% | **92%** |
+| night IR | 48% | **92%** |
+| monsoon | 25% | 68% |
+| night glare | 15% | 38% |
+| dusk, high ISO | 5% | 38% |
+| high speed | 3% | 37% |
+| fog | 12% | 35% |
+| far lane | 2% | 20% |
+| cheap cam | 0% | 15% |
+| storm | 0% | 0% |
+| **overall** | **16.5%** | **43.5%** |
+| **of what it stored** | 79% | **92%** |
+| **per read** | 76 ms | **20 ms** |
 
-Twice the accuracy at a seventh of the cost, and the gap is widest exactly where
-the classical pipeline collapsed — motion blur, dusk, fog — which are the
-captures where the character boundaries genuinely are not there.
+Two and a half times the accuracy at a quarter of the cost, and the gap is widest
+exactly where the classical pipeline collapsed — motion blur, dusk, fog — which
+are the captures where the character boundaries genuinely are not there.
 
 `anpr/compare_backends.py` reproduces that table. The classical engine is kept
 as an automatic fallback: without torch, or without trained weights, the
@@ -149,12 +162,19 @@ platform runs exactly as it did before.
 
 **Three things the measurements changed my mind about.**
 
-*The plate grammar is now nearly redundant.* It was worth several points when a
-per-character classifier had no context to stop a `B` landing in a digit slot.
-The BiGRU sees the whole plate and learns that structure from the data: greedy
-decoding scores 37.2%, the grammar beam 38.0% — **+0.8 points for 530x the
-decode cost**. The default is now greedy, with the beam run only when greedy
-returns something that is not a valid registration shape, which keeps the
+*The plate grammar is now nearly redundant, and so is decoding effort in
+general.* The grammar was worth several points when a per-character classifier
+had no context to stop a `B` landing in a digit slot. The BiGRU sees the whole
+plate and learns that structure from the data: greedy decoding scores 44.3%
+against the grammar beam's 45.0%, and widening that beam from 12 to 128 moves the
+number not at all (38.7% at every width on a second corpus).
+
+The decisive measurement is stronger still. On 251 failed reads, the true plate
+scored higher than the string the model emitted in **zero** of them — median gap
+−0.586 against the truth. There is nothing left for a better search to find: the
+model prefers the wrong answer, and every remaining point is a model problem, not
+a decoding one. The default is therefore greedy, with the beam run only when
+greedy returns something that is not a valid registration shape, which keeps the
 guarantee that a stored string is always well-formed.
 
 *My first beam search was wrong, and the measurement said so unambiguously.* It
@@ -163,12 +183,24 @@ strings, so losing to greedy means the search is broken — I had collapsed the
 blank and non-blank path probabilities that CTC prefix beam search has to track
 separately.
 
-*Two-row plates were being destroyed by preprocessing.* Squashing a motorcycle
-plate into a 32-pixel strip leaves each row about fourteen pixels tall: 2% plate
-accuracy. They are now split at their character bands and laid out as one line.
-Detecting that by canvas aspect ratio does not work — a camera crop carries
-margin and perspective, so an ordinary single-row capture arrives at 2.4:1 and
-gets cut in half — so the rows are found from the horizontal ink profile.
+*The one-row/two-row decision cannot be made by a threshold at all.* Squashing a
+motorcycle plate into a 32-pixel strip leaves each row about fourteen pixels
+tall, so the two rows have to be unwrapped into one line first. Deciding that
+from the canvas aspect ratio does not work — a camera crop carries margin and
+perspective, so an ordinary single-row capture arrives at 2.4:1 and gets cut in
+half. Deciding it from the horizontal ink profile does not work either, and the
+measurement is what settled it: the profile test skipped 30% of genuine two-row
+plates, which then read at **3.3%**, and misfired on 6.7% of single-row ones,
+every one of which read at **0%** — splitting one line in half puts the back of
+the registration in front of its own start.
+
+So the decision is deferred to the recogniser, which is the same principle that
+made the CRNN work in the first place: do not commit to a segmentation before
+you have tried to read it. Every plausible layout — as-is, split at the ink
+bands, split at the quietest row in the middle third — goes through the network
+in one batch and the exact CTC score picks the winner, preferring a grammatical
+read over an ungrammatical one. Worth +1.0 point measured in isolation on
+identical plates.
 
 **The classical decoder** (still the fallback) — classical pipelines commit to one
 segmentation and then classify, so a smeared `KA` fused into one blob is
@@ -194,21 +226,88 @@ known ground truth:
 Held-out glyph accuracy: **98.7%** over 36 classes  from 46 986 training crops.
 Plate-level accuracy is in the table below.
 
-**Confidence is agreement between hypotheses, not the winner's own score.**
-Two things go into it. The weakest character, because one wrong glyph makes the
-whole registration wrong and the mean would hide it. And — far more
-informative — how many of the eight binarisation hypotheses decoded the *same*
-string. The winner is chosen as the highest-scoring of the eight, so its own
-confidence is inflated by that selection: measured over 500 reads it sits at
-0.99 on correct reads and 0.89 on wrong ones, which barely separates them.
-Agreement is not selected for in the same way and scores 0.80 against 0.26.
+**Confidence is the exact probability CTC assigns to the string it decoded.**
+The forward-backward recursions marginalise over every alignment between the
+network's output columns and the registration, normalised per character so plates
+of different lengths compare; the implementation is checked against
+`torch.nn.CTCLoss` to 1e-4. `anpr/crnn.py::ctc_score` returns it.
 
-That is what makes the confidence floor work, and it changes the operational
-picture completely: the platform discards 24% of captures and what it does
-store is **97.4%** correct, against 86.8% if it stored everything. On the
-dirty condition it accepts only a quarter of reads — and every one of those is
-right. For a platform that puts a registration in front of a police officer,
-refusing to answer is the correct answer.
+That replaced a heuristic that walked the argmax path with a cursor, and the
+measurement was brutal: over 700 captures it ranked correct reads *below* wrong
+ones — **AUROC 0.367**, worse than a coin toss, with a median confidence of 0.000
+on correct reads against 0.070 on wrong ones. Whenever the cursor mis-advanced,
+every later character was searched in a window that no longer held it. The exact
+computation scores **AUROC 0.974** on the same reads, and at the operating point
+that holds 90% precision it keeps three times as many reads as the heuristic did.
+
+That is what makes the confidence floor mean something. The platform stores 71%
+of captures and what it stores is **96.2%** correct; a read below the floor is
+discarded rather than shown. `cheap_cam` accepts only a fifth of its reads. For a
+platform that puts a registration in front of a police officer, refusing to
+answer is the correct answer — and `core/repair.py` gets a second chance at the
+refusals later, from what the neighbouring cameras saw.
+
+*(The classical fallback keeps its own definition — the weakest character times
+the share of binarisation hypotheses that agreed — because the two quantities are
+not comparable. Each backend is judged against its own floor, exposed as
+`PlateRead.accepted`.)*
+
+### Reading a burst, not a frame
+
+A real ANPR node is triggered by a loop or a tripwire and takes several frames as
+the vehicle crosses the zone — different distances, exposures and motion blurs of
+the same plate. Reading only the middle one throws away every other look, and the
+looks fail independently: measured over 250 vehicles across all ten conditions,
+one frame reads 40.4% of plates and eight read 77.2% with identical weights.
+
+The frames are decoded separately and voted, weighted by the exact CTC score,
+which is what makes the vote work at all — a vote is only as good as its ability
+to tell a confident frame from a lucky one. The reported confidence stays the best
+single frame's, so the storage floor keeps the meaning it was calibrated with, and
+how many frames agreed is reported separately as `agreement`.
+
+`config.BURST_FRAMES` sets it (default 5; `GODSEYE_BURST=1` restores single-frame
+reads). The ANPR Lab offers both modes side by side and shows what each frame read
+on its own, because watching one frame lose the plate to glare and get outvoted is
+the clearest way to see why the burst matters.
+
+### Recovering the refusals
+
+A capture below the confidence floor is not stored — but its CTC lattice is kept
+for a while, because the neighbouring cameras have not reported yet. Once they
+have, a candidate set exists that did not exist at capture time: whatever passed
+this camera almost certainly appears in what its neighbours read, minutes either
+side, and that turns an open-vocabulary problem over 36¹⁰ strings into closed-set
+retrieval over a few hundred candidates.
+
+It is deliberately **not** "work out which characters are missing and fill them
+in". That cannot be built here: per-character CTC posteriors are peaked almost
+everywhere, so 99.8% of characters come back above 0.9 confidence *including the
+wrong ones*, and per-character confidence predicts per-character correctness at
+AUROC 0.692. The engine knows which strings it doubts, not which character let it
+down. So instead each candidate string is scored against the retained lattice and
+ranked — which recovers the true plate as the top hit in **78%** of refused
+captures, holding up as the candidate set grows (78% at ten candidates, 69% at
+two hundred).
+
+Acceptance needs a likelihood floor *and* a margin over the runner-up, which
+together stand in for a "none of these" hypothesis — when the vehicle entered off
+a road no camera covers the true plate is simply absent, and the best wrong
+candidate still looks plausible. On 90 minutes of simulated traffic the pass
+accepted 45 of 60 refused captures, all 45 correct against ground truth, and 38 of
+those were genuine repairs of a wrong decode rather than borderline reads nudged
+over the floor (`DL63AQ9205` → `DL10AD9265`, `WB51RJW5251` → `WB51KRP1254`).
+
+Two rules keep it honest. Candidate sets are built from `sightings` and inferences
+are written to `inferences`, so a plate the platform *guessed* can never become
+evidence for another guess — without that, one mistake walks down a corridor and
+the platform manufactures a journey nobody made. And plates already flagged as
+clones are skipped, because this pass works by assuming plausible travel and would
+otherwise reconstruct one coherent path from two real vehicles. It runs behind the
+live feed (`config.REPAIR_LAG_S`), because half its evidence is the downstream
+camera, which has not seen the vehicle yet at the moment the capture fails.
+
+`python -m core.repair` runs the pass; `POST /api/repair/run` does it over HTTP.
 
 ### Reading a photograph
 
@@ -229,53 +328,73 @@ handwriting, signage and arbitrary text. It is not a general OCR.
 
 ### Measured accuracy
 
-| Capture condition | Plate accuracy | Character accuracy | Stored | Accuracy of stored reads |
+The platform reads a **burst**, not a photograph: a camera is triggered as a
+vehicle enters the zone and contributes several frames, which are decoded
+independently and voted by CTC score. Both columns are reported because they
+answer different questions — the single-frame column judges the recogniser, the
+burst column judges the platform.
+
+| Capture condition | Single frame | Burst (5) | Stored | Of stored, correct |
 |---|---|---|---|---|
-| clean | 90% | 97.4% | 94/100 | 95% |
-| night / low light | 96% | 98.2% | 92/100 | 100% |
-| headlight glare | 96% | 97.3% | 87/100 | 99% |
-| rain | 92% | 96.8% | 81/100 | 99% |
-| motion blur | 85% | 93.0% | 71/100 | 97% |
-| angled (perspective) | 83% | 92.4% | 71/100 | 100% |
-| dirty / grimy | 67% | 87.3% | 25/100 | 100% |
-| damaged plate | 77% | 94.2% | 69/100 | 90% |
-| low resolution | 93% | 97.6% | 94/100 | 97% |
-| mixed (two at once) | 89% | 95.3% | 73/100 | 99% |
-| **overall** | **86.8%** | **94.9%** | 757/1000 | **97.4%** |
+| daylight | 90% | 100% | 100/100 | 100% |
+| night_ir | 92% | 100% | 99/100 | 100% |
+| monsoon | 62% | 98% | 98/100 | 99% |
+| dusk_highiso | 35% | 89% | 84/100 | 98% |
+| night_glare | 41% | 87% | 83/100 | 100% |
+| fog | 32% | 83% | 82/100 | 96% |
+| high_speed | 41% | 80% | 80/100 | 94% |
+| far_lane | 21% | 67% | 67/100 | 82% |
+| cheap_cam | 10% | 27% | 20/100 | 80% |
+| storm | 0% | 0% | 0/100 | — |
+| **overall** | **42.4%** | **73.1%** | **713/1000** | **96.2%** |
 
-1,000 plates, 100 per condition, decoded at 10 plates/s on a single CPU core. On 60 composited whole-frame scenes the localiser found the plate 98% of the time and the platform read it correctly 52% of the time, at 0.49 s a frame.
+1,000 plates, 100 per condition, five frames each — 5,000 reads in 427 s on a
+single CPU core. The dashboard renders the same `models/benchmark.json` this
+table is copied from, so the document and the running system cannot disagree:
 
+```bash
+python -m anpr.benchmark --samples 100 --scenes 60 --layouts 100 --burst 5 --json models/benchmark.json
+```
 
-By plate layout, at 100 plates each:
+By plate layout, single frame, 100 each: one row clean 46%, dirty 28%, damaged
+37%, two rows 32%. On 60 composited whole-frame scenes the localiser found the
+plate 57% of the time and the platform read it correctly 22%, at 0.51 s a frame.
 
-| Layout | Plate accuracy |
-|---|---|
-| one row | 88% |
-| one row + IND band | 79% |
-| two rows | 83% |
-| two rows + IND band | 85% |
+**Against the >90% target: not met.** The platform reads **73.1%** of plates on
+the burst path and 42.4% on a single frame. Of the captures it is confident
+enough to store — 71% of them — **96.2%** are exactly right, and that is the
+number an operator actually experiences, because a read below the floor is
+discarded rather than shown. But it is not the number the brief asks for and it
+is not quoted here as though it were.
 
-`anpr/benchmark.py` produces these tables; it is not a quoted figure. *Plate*
-means the entire string matched exactly. *Accepted* is the operational number:
-of the reads the engine was confident enough to store, how many were exactly
-right — a read below the confidence floor is dropped rather than written, which is
-what a real ANPR node does.
+Three conditions hold the average down, and they are not the same kind of problem.
 
-**The plate distribution.** Every benchmark plate is drawn across the ten
-typefaces, with 18 % two-row layouts, 45 % carrying an IND band, and both plate
-colours — a harder and more realistic mix than a single rendered font.
+* **`storm` scores 0% and should.** Ranking the true plate against 199 decoys
+  under the exact CTC likelihood succeeds 2.5% of the time, which means the
+  registration is not recoverable from those pixels by any method. Refusing it is
+  correct behaviour, not a failure.
+* **`cheap_cam` (27%) and `far_lane` (67%) are not pixel-limited** — which is
+  what an earlier version of this document claimed. Their information ceilings
+  are 75% and 95%: the plate is in the image and the recogniser is not finding it.
+* Every other condition clears 80% on the burst path, and four clear 95%.
 
+**Where the remaining accuracy is.** Across all conditions greedy decoding reads
+43.8%, while the true plate outranks 199 decoys 83.2% of the time. That ~40-point
+gap is the recogniser, not the optics. It is also not the decoder: on 251 failed
+reads, **zero** had the true plate scoring higher than the string the model
+emitted, and widening the grammar beam from 12 to 128 moves nothing. The model
+prefers the wrong answer, so what is left is a model problem.
 
-**Against the >90 % target.** On the reads it stands behind, the engine is at
-97.4%. On every read including the ones it rejects, it is 86.8% exact-string
-and 94.9% per character — five of the ten conditions clear 90 %, and dirt
-(67%) and physical damage (77%) are what hold the average down. An
-earlier build measured 91.2 % overall, but on an easier corpus: one font, one
-row, no IND band. Widening the corpus to ten typefaces, two-row plates and High
-Security plates cost about four points and is the more honest number. Closing
-the remaining gap is a model problem rather than a pipeline one — the character
-classifier is a CPU-trained MLP, and a small CNN on real plate crops is the
-next step.
+**What has been ruled out, by experiment.** Capacity is not the limit — the
+current 745k architecture and a 2.95M one both memorise 400 captures at 100%.
+Schedule is not the limit — an 18-epoch run beat the shipped weights only at
+epoch 1, then spent seventeen epochs with falling loss and flat accuracy, and
+benchmarked 2 points *worse* head to head. What remains untested is the training
+distribution: the model scores **4% on a clean, undegraded render** and gets
+better as the image is degraded toward what it trained on, which means it has
+learned this camera model's artefact signature rather than the shapes of the
+glyphs. No scenario in the corpus has a digital zoom below 1.6, so it has never
+seen a sharp plate.
 
 **What the conditions are.** Each is a *site*, not a filter: a mounting height,
 a distance, a lens, a shutter, an ISO and the weather, from which everything
@@ -285,7 +404,7 @@ illuminator on retroreflective sheeting, which is often *easier* than dusk;
 `monsoon` adds motion-blurred rain streaks, veiling and a wet lens that refracts
 rather than dims; `fog` applies Koschmieder scattering scaled by path length;
 `high_speed` is a shutter too slow for the road it polices; `far_lane` is the
-far carriageway, where the plate is too few pixels to recover; `dusk_highiso`
+far carriageway, where the plate lands at 45-90 px; `dusk_highiso`
 is the worst hour, too dark for the shutter and no IR yet; `cheap_cam` is an old
 low-bitrate encoder plus heavy digital zoom; `storm` is everything at once and
 should be **refused**. Plate grime and physical damage are drawn independently,
@@ -319,10 +438,18 @@ ranked by an edit distance that charges 0.4 rather than 1.0 for a substitution
 the OCR engine is actually known to make (`0↔O`, `8↔B`, `5↔S`, `1↔I` …).
 
 **The reconstruction says when it does not trust itself.** A leg whose implied
-speed exceeds 160 km/h is flagged rather than drawn as fact — that pattern means
-the same plate is running on two vehicles. Long stops, and legs where the path
-had to be inferred through intermediate cameras, are called out too. The map
-draws the road polyline from the camera graph, not a straight line between dots.
+speed exceeds 160 km/h is flagged rather than drawn as fact. It does *not* assert
+a clone on that basis — at this engine's accuracy a misread merges two vehicles
+onto one registration and produces the same signature, so the verdict goes
+through `core/clones.py` and its guards first (§5), and the page says which of
+the two it thinks it is looking at. Long stops, and legs where the path had to be
+inferred through intermediate cameras, are called out too. The map draws the road
+polyline from the camera graph, not a straight line between dots.
+
+**A successful read answers the next question too.** A plate on its own is a
+string; the moment one resolves, the ANPR Lab and both read endpoints show where
+that vehicle has been — every camera it passed, in order, on the map, with the
+legs between them. There is no second search to run.
 
 Also on the page: co-travellers (vehicles repeatedly seen at the same camera
 within a couple of minutes — a convoy or a tail), and one click to put the plate
@@ -358,9 +485,12 @@ code):
   rebuilt four maps and remounted their canvases on a timer. The live map is now
   an `st.fragment` with `run_every`, each chart has a stable component key, and
   the cached queries carry their own TTL. Measured over four tab round-trips,
-  six layer toggles and three refresh cycles: **22 canvases and 3 WebGL contexts,
-  constant, with no page errors** — against a growing set before, which is what
-  eventually exhausts Chrome's context budget and blacks the map out.
+  six layer toggles and three refresh cycles in a browser session: **22 canvases
+  and 3 WebGL contexts, constant, with no page errors** — against a growing set
+  before, which is what eventually exhausts Chrome's context budget and blacks the
+  map out. That was a live browser measurement; unlike every other number here it
+  has no artefact in the repo to re-run, so take it as a report rather than as
+  something you can reproduce from a command.
 
 ## 4 · Macro traffic analytics
 
@@ -376,6 +506,7 @@ hence congestion — aggregated over every plate it gives the city.
 | Origin–destination | Where each plate entered and left the network, with median trip time; gateway-only for through-traffic demand |
 | Movement heatmap | Each traversed link sampled along its polyline, weighted by volume × congestion, so heat follows the roads instead of pooling on junctions |
 | Trends | Flow, unique vehicles and median network speed over time |
+| Sector load | Reads and per-minute rate aggregated by city sector (`GET /api/analytics/sectors`) |
 
 Speeds are only computed between *adjacent* cameras. Between two cameras that
 are not neighbours the vehicle's route is inferred, so neither the distance nor
@@ -392,11 +523,45 @@ plate, so the cost is a couple of indexed lookups.
 | Rule | Fires when | Severity |
 |---|---|---|
 | `watchlist` | a listed plate is seen anywhere | critical |
-| `clone` | two sightings too far apart to be the same vehicle (>160 km/h implied) | critical |
+| `clone` | two sightings too far apart to be the same vehicle (>160 km/h implied over ≥3 km, both reads ≥0.70 confidence) | critical |
 | `loitering` | the same camera passed 4+ times within 45 minutes | medium |
-| `detour` | returns to a camera it already passed after covering 4× the direct distance | low |
-| `speeding` | implied link speed > 1.6× the road's free-flow limit | medium |
-| `odd_hour` | roaming three or more cameras between 01:00 and 05:00 | low |
+| `detour` | returns to a camera it already passed after covering 4× the direct distance — and ≥10 km travelled, within 40 min, across ≥3 distinct cameras | low |
+| `speeding` | implied link speed > 1.6× free-flow, between *adjacent* cameras only — between non-adjacent ones the route is inferred, so the speed is not evidence | medium |
+| `odd_hour` | three or more *distinct* cameras within a rolling hour, between 01:00 and 05:00 | low |
+
+**Clones are also caught the moment an operator searches**, not only as a
+sighting lands. The ingest-time rule above is rate-limited and needs both reads
+above 0.70 confidence, so a clone already sitting in the history can slip through
+it entirely. `core/clones.py` answers the question as a *query* instead, and
+every candidate a plate search returns is screened on the way out — the flag
+appears before the operator picks one, because whatever they do next assumes the
+registration belongs to one vehicle.
+
+The hard part is not finding an impossible leg; `reconstruct()` already does
+that. It is that at this engine's accuracy a **misread merges two different
+vehicles onto one registration and looks exactly like a clone**. Asserting a
+clone from an impossible leg alone would convert the platform's own OCR errors
+into accusations against real motorists. So a verdict has to survive three
+cheaper explanations first:
+
+* *it was a misread* — if a plate within OCR confusion distance was plausibly at
+  that camera at that time, judged by its own sightings either side, that is a far
+  more ordinary event than a cloned plate;
+* *it was a weak read* — both ends must clear `CLONE_MIN_CONFIDENCE`;
+* *it was geometry* — two cameras a few hundred metres apart turn ordinary clock
+  skew into a huge implied speed, so pairs under `CLONE_MIN_KM` are ignored.
+
+What survives is graded. One conflict is `suspected` and shown with its caveat;
+several independent ones are `confident` and carry a lower bound on how many
+vehicles are involved, from a greedy feasible-track cover. **Only `confident`
+reaches the alert queue** — a suspicion on screen carries its qualification,
+whereas the same suspicion in the queue becomes an item of record that somebody
+later acts on without it. Screening 40 real plates takes under 10 ms, because a
+clean plate costs one indexed query and a walk over consecutive pairs; the
+expensive misread test only runs once a conflict actually exists.
+
+`GET /api/plates/{plate}/clone-check` returns the verdict, the conflicts, and the
+ones it ruled out with the reason.
 
 Every threshold here was set by measuring against the seeded database, not by
 taste. `detour` began as "took more than one hop", which fires on every ordinary
@@ -404,10 +569,14 @@ journey because sightings are sparse whenever a read is dropped; then as "drove
 further than the direct distance", which fired on 28 % of all plates, because
 that is what a commute looks like. It now needs a vehicle to return to a camera
 it already passed after covering four times the direct distance, which picks out
-7 %. Alerts are de-duplicated per plate per rule.
+4% of the plates seen. Alerts are de-duplicated per plate per rule within a
+rolling window — 5 minutes for `watchlist`, 30 for `clone` and `loitering`, 45 for
+`detour`, 120 for `odd_hour` — not once and for all, which is why a six-hour
+replay raises 115 watchlist alerts on five plates rather than five.
 
-A six-hour seeded day produces roughly 130 watchlist hits (five listed plates),
-66 speeding alerts, 32 detours, and a handful of clones and loiterers.
+A six-hour seeded day produces 185 alerts: 115 watchlist hits (five listed
+plates), 53 speeding, 14 detours, and the scripted clone and loiterer. Counts move
+with the seed — `python seed.py --hours 6` reproduces this one.
 
 ---
 
@@ -415,19 +584,29 @@ A six-hour seeded day produces roughly 130 watchlist hits (five listed plates),
 
 | Real | Simulated |
 |---|---|
-| The OCR engine — segmentation, decoder, classifier, confidence | The camera feeds |
+| The OCR engine — CRNN, CTC decoding, confidence, burst fusion, repair | The camera feeds |
 | The plate images it reads, including all degradations | Vehicle movement (routed on the graph with a demand profile) |
 | Trajectory reconstruction, search, analytics, alert rules | — |
 | The camera network's coordinates (35 real Kolkata junctions) | Link lengths, road shape points and free-flow speeds (hand-estimated) |
 
+A third category sits between the two: registrations the platform **inferred**
+rather than read. `core/repair.py` recovers them from what neighbouring cameras
+saw, and they are written to their own `inferences` table — never to `sightings`.
+An inference is a hypothesis with an evidence chain, not an observation, and the
+two must not be confused by a query that ends up in front of a magistrate.
+
 The simulator renders a plate image per camera crossing and pushes it through
 the real engine, so what lands in the database is what the OCR engine read —
 misreads included. That is the point: the trajectory and analytics layers cope
-with imperfect reads exactly as they would in deployment. Decoding costs ~80 ms,
-so live mode decodes as many captures per tick as it can afford and falls back
-to an error model calibrated from the benchmark for the rest; every row records
-which path produced it in `ocr_variant`, and the ground-truth plate is kept in
-`true_plate` so accuracy can be audited end to end.
+with imperfect reads exactly as they would in deployment. One frame costs ~80 ms
+and a camera crossing is a burst of `BURST_FRAMES` of them, so a capture costs
+about 425 ms; live mode therefore works to a budget of decoded *frames*
+(`INLINE_OCR_MAX_PER_TICK`, divided by the burst size), and falls back to an
+error model for the rest. That model's per-condition accuracies are copied from
+the burst column of `models/benchmark.json`, so regenerating the benchmark
+re-calibrates it. Every row records which path produced it in `ocr_variant`, and
+the ground-truth plate is kept in `true_plate` so accuracy can be audited end to
+end.
 
 Swapping the simulator for real cameras means writing rows into `sightings` —
 nothing above that table knows where they came from.
@@ -446,14 +625,17 @@ nothing above that table knows where they came from.
 | `GET` | `/api/plates/search?q=` | Confusion-aware plate search |
 | `GET` | `/api/plates/{plate}/trajectory` | Full reconstructed path with legs |
 | `GET` | `/api/plates/{plate}/co-travellers` | Vehicles repeatedly seen alongside |
+| `GET` | `/api/plates/{plate}/clone-check` | Query-time clone verdict, conflicts, and what was ruled out |
 | `GET` | `/api/analytics/summary` | City headline metrics |
 | `GET` | `/api/analytics/density` · `/links` · `/bottlenecks` | Per-camera, per-link, ranked congestion |
 | `GET` | `/api/analytics/od` · `/heatmap` · `/trend` · `/sectors` | Demand, map layer, time series |
 | `GET` | `/api/alerts` · `/alerts/summary` | Alert queue and counts |
 | `POST` | `/api/alerts/{id}/ack` | Acknowledge |
-| `GET`/`POST`/`DELETE` | `/api/watchlist` | Manage watchlisted plates |
-| `POST` | `/api/anpr/read` | Read a plate from an uploaded image |
-| `POST` | `/api/anpr/demo` | Synthesise a plate under a condition and read it back |
+| `GET`/`POST` | `/api/watchlist` · `DELETE /api/watchlist/{plate}` | Manage watchlisted plates |
+| `POST` | `/api/anpr/read` | Read a plate from an uploaded image; returns the vehicle's route and history with it |
+| `POST` | `/api/anpr/demo` | Synthesise a plate under a condition and read it back (`frames` for a burst) |
+| `GET` | `/api/inferences` | Registrations the repair pass recovered, kept separate from sightings |
+| `POST` | `/api/repair/run` | Reconcile refused captures against what the neighbours saw |
 | `GET` | `/api/anpr/benchmark` · `/anpr/model` | Measured accuracy, model card |
 | `POST` | `/api/sim/live/{on\|off}` · `/sim/inject/{kind}` | Feed control, scripted incidents |
 | `WS` | `/api/ws/live` | Live sightings and alerts |
@@ -466,6 +648,7 @@ nothing above that table knows where they came from.
 GodsEye/
 ├── config.py                 # every path and tunable
 ├── seed.py                   # backfill a demo day, watchlist, scripted incidents
+├── tests.py                  # 58-check end-to-end self-check; run it before a demo
 ├── data/cameras.json         # 35 Kolkata junctions + 52 road links, with geometry
 ├── AUGMENTATION.md           # the camera model: stages, ordering, calibration
 ├── anpr/
@@ -477,14 +660,16 @@ GodsEye/
 │   ├── plates.py             # plate synthesis, surface faults, scene compositor
 │   ├── segment.py            # normalise, binarise, row-cluster, over-segment
 │   ├── model.py              # two-stage glyph classifier training
-│   ├── ocr.py                # localiser + grammar-constrained decoder — the engine
+│   ├── ocr.py                # localiser, burst fusion, decoders — the engine
 │   ├── imageio.py            # EXIF-aware loading for uploaded photographs
-│   └── benchmark.py          # accuracy per condition, and the whole-frame path
+│   └── benchmark.py          # accuracy per condition, single-frame and burst
 ├── core/
 │   ├── db.py                 # SQLite schema and queries
 │   ├── network.py            # camera graph, routing, bearings
 │   ├── trajectory.py         # reconstruction + confusion-aware search
 │   ├── analytics.py          # density, flows, O-D, bottlenecks, heatmap
+│   ├── repair.py             # recover refused captures from neighbouring cameras
+│   ├── clones.py             # query-time clone verdict, with the misread guards
 │   └── alerts.py             # real-time rules
 ├── sim/city.py               # traffic simulator feeding the real engine
 ├── api/                      # FastAPI: REST + WebSocket
@@ -495,8 +680,8 @@ GodsEye/
 
 ## Tech stack
 
-Python 3.11+ · OpenCV · scikit-learn · NumPy · Pillow · NetworkX · pandas ·
-SQLite (WAL) · FastAPI · Uvicorn · Streamlit · PyDeck · Altair
+Python 3.11+ · **PyTorch** (the CRNN reader) · OpenCV · scikit-learn · NumPy ·
+Pillow · NetworkX · pandas · SQLite (WAL) · FastAPI · Uvicorn · Streamlit · PyDeck · Altair
 
 ## Team
 

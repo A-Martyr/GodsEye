@@ -56,14 +56,14 @@ HOUR_PROFILE = [0.18, 0.12, 0.10, 0.11, 0.16, 0.32, 0.58, 0.86, 1.00, 0.94,
 # fused by CTC score). Used only for captures the live loop cannot afford to
 # decode for real.
 CONDITION_ACCURACY = {
-    "daylight": 0.98,
+    "daylight": 1.00,
     "night_ir": 1.00,
-    "night_glare": 0.82,
+    "night_glare": 0.87,
     "monsoon": 0.98,
-    "fog": 0.93,
-    "high_speed": 0.87,
-    "far_lane": 0.57,
-    "dusk_highiso": 0.88,
+    "fog": 0.83,
+    "high_speed": 0.80,
+    "far_lane": 0.67,
+    "dusk_highiso": 0.89,
     "cheap_cam": 0.27,
     "storm": 0.00,
 }
