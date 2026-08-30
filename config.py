@@ -112,6 +112,25 @@ CONGESTION_THRESHOLDS = {"free": 1.25, "moderate": 1.6, "heavy": 2.2}  # ratio v
 
 # --- Alerts -------------------------------------------------------------
 IMPOSSIBLE_SPEED_KMPH = 160.0   # above this between two cameras => cloned plate
+
+# --- Clone detection (core/clones.py) -----------------------------------
+# A clone verdict accuses a real motorist, so each of these exists to rule out a
+# cheaper explanation than "this registration is on two vehicles".
+# Two cameras a few hundred metres apart turn ordinary clock skew into a huge
+# implied speed, so a conflict has to span real distance.
+CLONE_MIN_KM = 3.0
+# Evidence from a read the engine barely stood behind is not evidence. Both ends
+# of a conflicting pair must clear this.
+CLONE_MIN_CONFIDENCE = 0.70
+# One impossible leg is a lead; several independent ones are a finding. Below
+# this a verdict is reported as "suspected" and stays off the alert queue.
+CLONE_CONFIRM_PAIRS = 2
+# How far either side of a sighting to look for the plate it might really have
+# been, and how close in OCR confusion distance that plate has to be. 1.0 is
+# about one substitution the engine is known to make.
+CLONE_MISREAD_WINDOW_S = 15 * 60.0
+CLONE_MISREAD_MAX_DISTANCE = 1.0
+CLONE_ALERT_DEDUP_S = 30 * 60.0
 LOITER_REVISITS = 4             # same camera N times ...
 LOITER_WINDOW_MIN = 45          # ... within this window
 ODD_HOUR_RANGE = (1, 5)         # 01:00-05:00 local

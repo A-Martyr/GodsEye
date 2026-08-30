@@ -135,11 +135,19 @@ def _summarise(plate: str, sightings: list[dict], legs: list[Leg]) -> dict:
 
 # --- search -------------------------------------------------------------
 def search(query: str, limit: int = 12, since: float | None = None,
-           max_distance: float = 1.7, conn=None) -> list[dict]:
+           max_distance: float = 1.7, conn=None, check_clones: bool = True) -> list[dict]:
     """Find plates matching a possibly-misread or partial query.
 
     Exact match ranks first, then confusion-aware near matches, then substring
     matches for operators who only caught part of the plate.
+
+    Every candidate is screened for a duplicate registration on the way out.
+    Search is the moment an operator meets a plate, and it is the wrong moment to
+    stay quiet about one being on two vehicles: everything they do next - a
+    trajectory, a watchlist entry, a challan - assumes it belongs to one. The
+    screen is cheap because a clean plate costs one indexed query and a walk over
+    consecutive pairs; the expensive misread test only runs once a conflict has
+    actually been found.
     """
     q = query.upper().replace(" ", "").replace("-", "")
     if not q:
@@ -165,11 +173,19 @@ def search(query: str, limit: int = 12, since: float | None = None,
             " FROM sightings WHERE plate = ?", (p,), conn=conn)[0]
         last = db.rows("SELECT camera_id FROM sightings WHERE plate = ?"
                        " ORDER BY ts DESC LIMIT 1", (p,), conn=conn)
-        out.append({"plate": p, "distance": round(d, 2), "exact": d == 0.0,
-                    "sightings": row["n"], "first_ts": row["first_ts"],
-                    "last_ts": row["last_ts"], "mean_confidence": row["conf"],
-                    "last_camera": last[0]["camera_id"] if last else None,
-                    "watched": bool(db.is_watched(p, conn=conn))})
+        entry = {"plate": p, "distance": round(d, 2), "exact": d == 0.0,
+                 "sightings": row["n"], "first_ts": row["first_ts"],
+                 "last_ts": row["last_ts"], "mean_confidence": row["conf"],
+                 "last_camera": last[0]["camera_id"] if last else None,
+                 "watched": bool(db.is_watched(p, conn=conn)),
+                 "clone_verdict": "none", "clone_reason": "", "min_vehicles": 1}
+        if check_clones:
+            from core import clones
+
+            rep = clones.check(p, since=since, conn=conn)
+            entry.update(clone_verdict=rep.verdict, clone_reason=rep.reason,
+                         min_vehicles=rep.min_vehicles)
+        out.append(entry)
     return out
 
 

@@ -221,6 +221,74 @@ def _live_map(window: int, auto: bool) -> None:
                          hide_index=True, width="stretch", height=430)
 
 
+@st.cache_data(ttl=10, show_spinner=False)
+def clone_check(plate: str, since: float | None = None) -> dict:
+    """Cached clone verdict. Re-runs on every Streamlit rerun otherwise."""
+    from core import clones
+
+    return clones.check(plate, since=since).as_dict()
+
+
+def render_plate_history(plate: str, since: float | None = None, key: str = "hist",
+                         compact: bool = True) -> None:
+    """Route and history for one plate, for use right after a successful read.
+
+    An ANPR read on its own is a string. What an operator actually wants the
+    moment a plate resolves is the rest of the sentence: where this vehicle has
+    been, when, and whether anything about that path is wrong. This renders that
+    join compactly enough to sit under a read without becoming a second Track
+    tab.
+    """
+    from anpr import plates as _plates          # tab-local elsewhere; needed here too
+
+    traj = trajectory.reconstruct(plate, since=since)
+    if not traj.sightings:
+        st.info(f"`{_plates.pretty(plate)}` reads cleanly, but this network has no "
+                "record of it in the window - a vehicle it has never seen, or one "
+                "whose earlier passes were all refused by the confidence floor.")
+        return
+    summ = traj.summary
+
+    # A read that resolves to a cloned registration is the one case where the
+    # history below is actively misleading - it is two vehicles' paths spliced
+    # into one line - so the warning goes above it, not after.
+    rep = clone_check(plate, since)
+    if rep["verdict"] == "confident":
+        st.error(f"**Cloned registration — at least {rep['min_vehicles']} vehicles.** "
+                 f"{rep['reason']} The route below splices their paths together.")
+    elif rep["verdict"] == "suspected":
+        st.warning(f"**Possible clone.** {rep['reason']}")
+
+    m = st.columns(5)
+    m[0].metric("Sightings", summ["sightings"])
+    m[1].metric("Cameras", summ["cameras_visited"])
+    m[2].metric("Distance", f"{summ['distance_km']:.1f} km")
+    m[3].metric("Journey", f"{summ['duration_min']:.0f} min")
+    m[4].metric("Last seen", ago(summ["last_seen"]))
+    st.caption(f"First seen {clock(summ['first_seen'])} at {summ['first_camera_name']} · "
+               f"last seen {clock(summ['last_seen'])} at {summ['last_camera_name']} · "
+               f"sectors: {', '.join(summ['sectors'])}")
+
+    layers, stops = maps.trajectory_layers(traj, net())
+    if layers and not stops.empty:
+        view = pdk.ViewState(latitude=float(stops["lat"].mean()),
+                             longitude=float(stops["lon"].mean()),
+                             zoom=_fit_zoom(stops), pitch=0)
+        st.pydeck_chart(maps.deck(
+            [maps.road_layer(maps.road_frame(net(), pd.DataFrame()))] + layers,
+            view, list(maps.BASEMAPS)[0]), height=340, key=f"{key}_map")
+    if traj.legs:
+        st.dataframe(pd.DataFrame([{
+            "from": l.from_name, "to": l.to_name, "left": clock(l.departed_ts),
+            "arrived": clock(l.arrived_ts), "minutes": round(l.minutes, 1),
+            "road km": round(l.road_km, 2), "implied km/h": round(l.implied_kmph, 1),
+            "heading": l.direction, "flag": "" if l.plausible else "!",
+            "note": l.note,
+        } for l in traj.legs]), hide_index=True, width="stretch")
+    else:
+        st.caption("Only one sighting in this window - no route to draw yet.")
+
+
 def render_live_map(window: int, auto: bool) -> None:
     """Run the map fragment, on a timer when auto-refresh is on.
 
@@ -283,12 +351,27 @@ with tab_track:
         if not matches:
             st.warning("No plate close to that was seen in the window.")
         else:
+            CLONE_BADGE = {"confident": "  ·  🔴 CLONED — {n} vehicles",
+                           "suspected": "  ·  🟠 POSSIBLE CLONE"}
             labels = [
-                f"{m['plate']}  ·  {m['sightings']} sightings  ·  "
-                + ("exact match" if m["exact"] else f"near match (distance {m['distance']})")
-                + ("  ·  ⚠ WATCHLISTED" if m["watched"] else "")
-                for m in matches
+                f"{c['plate']}  ·  {c['sightings']} sightings  ·  "
+                + ("exact match" if c["exact"] else f"near match (distance {c['distance']})")
+                + ("  ·  ⚠ WATCHLISTED" if c["watched"] else "")
+                + CLONE_BADGE.get(c["clone_verdict"], "").format(n=c["min_vehicles"])
+                for c in matches
             ]
+            # Surfaced before a candidate is chosen: whatever the operator does
+            # next with this plate assumes it belongs to one vehicle.
+            flagged = [c for c in matches if c["clone_verdict"] != "none"]
+            if flagged:
+                worst = "confident" if any(c["clone_verdict"] == "confident"
+                                           for c in flagged) else "suspected"
+                banner = st.error if worst == "confident" else st.warning
+                banner("Duplicate registration detected in these results — "
+                       + "; ".join(f"**{c['plate']}** ({c['clone_verdict']})"
+                                   for c in flagged))
+                for c in flagged:
+                    st.caption(f"{c['plate']}: {c['clone_reason']}")
             choice = st.radio("Candidates", range(len(matches)),
                               format_func=lambda i: labels[i], horizontal=False)
             plate = matches[choice]["plate"]
@@ -307,9 +390,25 @@ with tab_track:
                        f"last seen {clock(summ['last_seen'])} at {summ['last_camera_name']} "
                        f"({ago(summ['last_seen'])}) · sectors: {', '.join(summ['sectors'])}")
 
-            if summ["implausible_legs"]:
-                st.error(f"{summ['implausible_legs']} leg(s) are physically impossible — "
-                         "this plate is probably running on more than one vehicle.")
+            report = clone_check(plate, since)
+            if report["verdict"] == "confident":
+                st.error(f"**Cloned registration.** {report['reason']}")
+            elif report["verdict"] == "suspected":
+                st.warning(f"**Possible clone.** {report['reason']}")
+            elif summ["implausible_legs"]:
+                # Impossible legs exist but every one is better explained than by
+                # a clone. Saying so is the point: at this engine's accuracy a
+                # misread merges two vehicles onto one plate and looks identical.
+                st.info(f"{summ['implausible_legs']} leg(s) look physically impossible, "
+                        f"but this is not read as a clone — {report['reason']}")
+            if report["dismissed"]:
+                with st.expander(f"Conflicts ruled out ({len(report['dismissed'])})"):
+                    st.dataframe(pd.DataFrame([{
+                        "from": d["from_name"], "to": d["to_name"],
+                        "implied km/h": round(d["implied_kmph"]),
+                        "road km": round(d["road_km"], 1),
+                        "ruled out as": d["explained_by_misread"],
+                    } for d in report["dismissed"]]), hide_index=True, width="stretch")
 
             tcol = st.columns([1.2, 1, 3])
             tmap = tcol[0].selectbox("Basemap", list(maps.BASEMAPS), index=0, key="traj_basemap")
@@ -555,7 +654,14 @@ with tab_anpr:
         from anpr.ocr import engine as _engine
         rng = _random.Random()
         eng = _engine()
-        truth = text.upper().replace(" ", "") or plate_lib.random_plate(rng)
+        truth = text.upper().replace(" ", "")
+        if not truth:
+            # Prefer a vehicle the network has actually seen. The point of the
+            # panel below is the join between a read and that vehicle's history,
+            # and a freshly invented registration has no history to join to.
+            busy = db.rows("SELECT plate FROM sightings GROUP BY plate"
+                           " HAVING COUNT(*) >= 3 ORDER BY RANDOM() LIMIT 1")
+            truth = busy[0]["plate"] if busy else plate_lib.random_plate(rng)
         two_row = layout == "Two rows"
         # every frame is a fresh trip through the camera model: the same plate,
         # the same site, a different instant
@@ -628,6 +734,14 @@ with tab_anpr:
                 color=alt.condition(alt.datum.confidence > 0.8, alt.value("#2ea043"),
                                     alt.value("#f5a524"))), width="stretch")
 
+        if read.text:
+            st.divider()
+            st.markdown(f"### Where `{plate_lib.pretty(read.text)}` has been")
+            st.caption("A read on its own is a string. This is the rest of the "
+                       "sentence: the same registration looked up across every "
+                       "camera in the network, in order.")
+            render_plate_history(read.text, key="anpr_read")
+
     up = st.file_uploader("…or upload a plate photograph", type=["png", "jpg", "jpeg", "bmp"])
     if up is not None:
         import cv2
@@ -658,6 +772,9 @@ with tab_anpr:
                            "buys the accuracy on the benchmark below, and it is the same thing "
                            "that makes the engine refuse handwriting, signage and arbitrary "
                            "text.")
+            if read.text and read.plate_found:
+                st.markdown(f"**Where `{read.pretty}` has been**")
+                render_plate_history(read.text, key="anpr_upload")
 
     st.divider()
     st.subheader("Measured accuracy")

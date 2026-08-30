@@ -79,6 +79,20 @@ def plate_trajectory(plate: str, hours: float = Query(24.0, ge=0.1, le=720)):
     return traj.as_dict()
 
 
+@router.get("/plates/{plate}/clone-check", summary="Is this registration on two vehicles?")
+def plate_clone_check(plate: str, hours: float = Query(24.0, gt=0)):
+    """Query-time clone verdict, with the conflicts it ruled out and why.
+
+    Distinct from the ingest-time clone alert in core/alerts.py, which only fires
+    as a sighting arrives, is rate-limited, and so can miss a clone that is
+    already sitting in the history.
+    """
+    from core import clones
+
+    rep = clones.check(plate.upper().replace(" ", ""), since=time.time() - hours * 3600.0)
+    return rep.as_dict()
+
+
 @router.get("/plates/{plate}/co-travellers", summary="Vehicles repeatedly seen alongside")
 def plate_co_travellers(plate: str, window_s: float = Query(120.0, ge=10, le=900)):
     return {"plate": plate.upper(), "co_travellers": trajectory.co_travellers(plate, window_s)}
@@ -220,22 +234,55 @@ def _png_b64(img: np.ndarray) -> str:
     return base64.b64encode(buf.tobytes()).decode() if ok else ""
 
 
+def _history_block(plate: str, hours: float = 24.0) -> dict:
+    """The rest of the sentence after a successful read.
+
+    A read returns a string; what an operator needs next is where that vehicle
+    has been. Attached to the read itself so the join does not need a second
+    round trip, and kept compact - the full path is on /plates/{plate}/trajectory.
+    """
+    if not plate:
+        return {"known": False}
+    traj = trajectory.reconstruct(plate, since=time.time() - hours * 3600.0)
+    if not traj.sightings:
+        return {"known": False, "plate": plate}
+    from core import clones
+
+    return {
+        "known": True, "plate": plate, "summary": traj.summary,
+        "clone": clones.check(plate, since=time.time() - hours * 3600.0).as_dict(),
+        "legs": [{"from": l.from_name, "to": l.to_name, "departed_ts": l.departed_ts,
+                  "arrived_ts": l.arrived_ts, "minutes": round(l.minutes, 1),
+                  "road_km": round(l.road_km, 2),
+                  "implied_kmph": round(l.implied_kmph, 1),
+                  "direction": l.direction, "plausible": l.plausible, "note": l.note}
+                 for l in traj.legs],
+        "sightings": [{"ts": x["ts"], "camera_id": x["camera_id"],
+                       "camera_name": x.get("camera_name"), "sector": x.get("sector"),
+                       "confidence": x["confidence"]} for x in traj.sightings],
+    }
+
+
 @router.post("/anpr/read", summary="Read a plate from an uploaded image")
-async def anpr_read(file: UploadFile = File(...)):
+async def anpr_read(file: UploadFile = File(...), history: bool = True):
     raw = await file.read()
     arr = imageio.load_bytes(raw)
     if arr is None:
         raise HTTPException(400, "could not decode that image")
     t0 = time.time()
     read = state.get_engine().read_frame(arr)
-    return {"filename": file.filename, "ms": round((time.time() - t0) * 1000, 1),
-            "image_size": [int(arr.shape[1]), int(arr.shape[0])], **read.as_dict()}
+    out = {"filename": file.filename, "ms": round((time.time() - t0) * 1000, 1),
+           "image_size": [int(arr.shape[1]), int(arr.shape[0])], **read.as_dict()}
+    if history and read.text and read.plate_found:
+        out["history"] = _history_block(read.text)
+    return out
 
 
 class DemoRequest(BaseModel):
     plate: str | None = None
     condition: str = Field("mixed", examples=plate_lib.CONDITIONS)
     severity: float | None = Field(None, ge=0.0, le=1.0)
+    history: bool = Field(True, description="also return where this vehicle has been")
     frames: int = Field(1, ge=1, le=10,
                         description="Frames the node contributes for this vehicle. "
                                     "1 reads a single photograph; more reads a burst "
@@ -272,6 +319,7 @@ def anpr_demo(req: DemoRequest):
             "ink_png_b64": _png_b64(ink) if ink is not None else "",
             "per_frame": [{"text": r.text, "confidence": round(r.confidence, 4),
                            "correct": r.text == cap.text} for r in per_frame],
+            "history": _history_block(read.text) if req.history else {"known": False},
             **read.as_dict()}
 
 

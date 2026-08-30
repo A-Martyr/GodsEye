@@ -323,6 +323,63 @@ def main() -> int:
         check("a cloned plate is excluded from the candidate set",
               clone_plate not in cands, f"{len(cands)} candidates, clone suppressed")
 
+    print("\nclone detection at search time")
+    from core import clones
+
+    far_a, far_b = "CAM-35", "CAM-12"
+    km_far = net.route_km(far_a, far_b)
+    tnow = time.time()
+
+    def _put(pl, cam, ts, conf=0.99):
+        db.add_sighting(db.Sighting(ts=ts, camera_id=cam, plate=pl, confidence=conf,
+                                    ocr_variant="test", true_plate=pl))
+
+    cl = "XX01AB1234"
+    for cam, off in ((far_a, -1800), (far_b, -1620), (far_a, -1440), (far_b, -1260)):
+        _put(cl, cam, tnow + off)
+    rep = clones.check(cl, net=net)
+    check("a genuine clone is detected without being searched for by hand",
+          rep.verdict == "confident" and rep.min_vehicles >= 2,
+          f"{rep.verdict}, at least {rep.min_vehicles} vehicles, "
+          f"{len(rep.conflicts)} conflicts over {km_far:.0f} km")
+
+    weak = "XX02CD5678"
+    for cam, off in ((far_a, -1800), (far_b, -1620), (far_a, -1440), (far_b, -1260)):
+        _put(weak, cam, tnow + off, conf=0.45)
+    check("low-confidence reads never accuse anyone",
+          clones.check(weak, net=net).verdict == "none",
+          "same impossible geometry, weak reads, no verdict")
+
+    real, twin = "XX03EF9012", "XX03EF9O12"
+    _put(real, far_a, tnow - 900)
+    _put(real, far_b, tnow - 840)
+    _put(twin, far_b, tnow - 870)
+    _put(twin, far_b, tnow - 810)
+    mis = clones.check(real, net=net)
+    check("an impossible leg explained by a misread is not called a clone",
+          mis.verdict == "none" and any(d.explained_by_misread == twin
+                                        for d in mis.dismissed),
+          f"ruled out as {mis.dismissed[0].explained_by_misread if mis.dismissed else '-'}")
+
+    ok_plate = "XX04GH3456"
+    _put(ok_plate, far_a, tnow - 3600)
+    _put(ok_plate, far_b, tnow - 1800)
+    check("an ordinary journey is left alone",
+          clones.check(ok_plate, net=net).verdict == "none")
+
+    hits = trajectory.search(cl, limit=3)
+    check("search flags the clone automatically",
+          bool(hits) and hits[0]["clone_verdict"] == "confident",
+          f"{hits[0]['plate'] if hits else '-'} -> "
+          f"{hits[0]['clone_verdict'] if hits else '-'}")
+
+    before = db.rows("SELECT COUNT(*) c FROM alerts WHERE kind = 'clone'")[0]["c"]
+    clones.raise_alerts(clones.check(ok_plate, net=net))
+    clones.raise_alerts(mis)
+    check("only a confident verdict reaches the alert queue",
+          db.rows("SELECT COUNT(*) c FROM alerts WHERE kind = 'clone'")[0]["c"] == before,
+          "suspicions and ruled-out conflicts stay off it")
+
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:
         print("failed: " + ", ".join(FAILED))
