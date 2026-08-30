@@ -16,9 +16,10 @@ derived from the same reads, and a real-time alert queue on top of both.
 path it actually runs, and **96.2%** on the reads it is confident enough to store.
 The brief asks for >90% and this does not meet it; §1 reports the measurement per
 condition, says which conditions are information-limited and which are model
-limits, and lists what has already been ruled out as the cause. Every number in
-this document comes from `models/benchmark.json`, which the dashboard renders
-from the same file.
+limits, and lists what has already been ruled out as the cause. The headline
+table comes from `models/benchmark.json`, which the dashboard renders from the
+same file so the two cannot disagree; the other measurements name the script or
+probe that produced them.
 
 ---
 
@@ -27,13 +28,15 @@ from the same file.
 ```bash
 pip install -r requirements.txt
 
-python seed.py                                  # 6 h of city traffic into SQLite (~20 s)
+python seed.py                                  # 6 h of city traffic into SQLite (~65 s)
 uvicorn api.main:app --reload --port 8000       # API + live feed  → http://localhost:8000/docs
 streamlit run dashboard/app.py                  # control room     → http://localhost:8501
 ```
 
-The very first run trains the glyph classifier — 3–5 minutes, CPU only — and
-caches it in `models/`; every run after that starts in seconds. Nothing here
+Both models are committed, so nothing has to be trained. If `models/` is
+emptied, the CRNN has to be retrained deliberately (`python -m anpr.train_crnn`,
+tens of minutes on CPU) while the classical fallback's glyph classifier retrains
+itself on first use in about three minutes. Nothing here
 needs a GPU, an internet connection, or a dataset download. To see the numbers
 behind the accuracy claim, and to check every layer end to end:
 
@@ -65,22 +68,27 @@ graph TB
         LOC[Localise plate<br/>in the frame] --> PREP[Unwrap two-row<br/>CLAHE · resize 32x160]
         PREP --> NET[(CRNN<br/>CNN + BiGRU, CTC)]
         NET --> DEC[Greedy decode<br/>grammar beam if illegal]
-        LOC -.fallback, no torch.-> BIN[5 binarisations<br/>+ segmentation]
+        LOC -.fallback, no torch.-> BIN[8 binarisations<br/>+ segmentation]
         BIN --> DP[Grammar DP decoder]
         DP --> CLF[(Glyph MLP)]
     end
 
     CAM -->|region of interest| LOC
-    DEC -->|plate + confidence| STORE[(SQLite<br/>sightings · alerts · watchlist)]
+    DEC --> FUSE[Burst fusion<br/>5 frames voted by CTC score]
+    FUSE -->|above the floor| STORE[(SQLite<br/>sightings · alerts · watchlist)]
+    FUSE -.below the floor.-> UNRES[(unresolved<br/>+ retained CTC lattice)]
+    UNRES --> REP[Repair pass<br/>rank what the neighbours saw]
+    REP --> INF[(inferences<br/>never sightings)]
 
     STORE --> TRAJ[Trajectory engine<br/>confusion-aware search]
     STORE --> ANA[Macro analytics<br/>flows · O-D · bottlenecks]
     STORE --> ALERT[Alert rules<br/>watchlist · clone · loiter · detour]
+    STORE --> CLONE[Clone verdict<br/>at search time, misread-guarded]
 
-    TRAJ & ANA & ALERT --> API[FastAPI + WebSocket]
+    TRAJ & ANA & ALERT & CLONE & INF --> API[FastAPI + WebSocket]
     API --> UI[Streamlit control room<br/>GIS maps · heatmaps]
 
-    NET[/cameras.json<br/>graph with real coordinates/] -.-> TRAJ & ANA & ALERT
+    GEO[/cameras.json<br/>graph with real coordinates/] -.-> TRAJ & ANA & ALERT & REP
 ```
 
 ---
@@ -91,10 +99,17 @@ The hard part of ANPR is not clean plates. It is the 9 p.m. capture through
 rain, at 30° off-axis, on a plate half covered in road grime. The engine is
 built around that case.
 
-**Pipeline.** Locate the plate in the frame → normalise (deskew from the ink
-cloud, CLAHE, height set by aspect ratio) → divide out the background field so
-mud, shadow and glare gradients disappear → Otsu → cluster the marks into text
-rows → deliberately *over*-segment each row into atoms → decode.
+**Pipeline.** Locate the plate in the frame → try each plausible row layout →
+CLAHE and resize to 32×160 → CRNN → CTC decode, with a grammar-constrained beam
+only when greedy returns something that is not a registration → fuse the burst.
+No binarisation and no segmentation: on a plate that has been through a JPEG
+encoder at 90 px wide, committing to character boundaries before recognising
+anything is betting on information the image no longer holds.
+
+*(The classical fallback — used only when torch or the weights are missing — is
+the older shape: normalise, divide out the background field, Otsu, cluster into
+rows, over-segment into atoms, and search the groupings. It is described further
+down.)*
 
 **It is benchmarked on what a gantry camera actually sends.** Captures are not
 clean renders with filters over them: they come from a physical camera model
@@ -150,13 +165,16 @@ Head to head on identical captures:
 | storm | 0% | 0% |
 | **overall** | **16.5%** | **43.5%** |
 | **of what it stored** | 79% | **92%** |
-| **per read** | 76 ms | **20 ms** |
+| **per read** | 117 ms | **21 ms** |
 
-Two and a half times the accuracy at a quarter of the cost, and the gap is widest
-exactly where the classical pipeline collapsed — motion blur, dusk, fog — which
-are the captures where the character boundaries genuinely are not there.
+Two and a half times the accuracy at a quarter of the cost. The widest gaps are
+night IR (+44 points) and monsoon (+43) — captures where the plate is legible but
+the *boundaries between characters* are not, which is exactly the decision the
+classical pipeline has to make first and the CRNN never makes.
 
-`anpr/compare_backends.py` reproduces that table. The classical engine is kept
+`python -m anpr.compare_backends --samples 60 --json models/backend_comparison.json`
+reproduces that table, and the committed JSON is the run it came from. Per-read
+timings move with machine load — the accuracies do not. The classical engine is kept
 as an automatic fallback: without torch, or without trained weights, the
 platform runs exactly as it did before.
 
@@ -175,7 +193,11 @@ scored higher than the string the model emitted in **zero** of them — median g
 model prefers the wrong answer, and every remaining point is a model problem, not
 a decoding one. The default is therefore greedy, with the beam run only when
 greedy returns something that is not a valid registration shape, which keeps the
-guarantee that a stored string is always well-formed.
+registration shape well-formed *when the beam finds one*. It is not a hard
+guarantee: if no pattern completes inside the beam, `constrained_decode` returns
+the greedy string with an empty pattern, and nothing re-checks the grammar before
+storage. The confidence floor is what actually keeps malformed reads out of the
+database.
 
 *My first beam search was wrong, and the measurement said so unambiguously.* It
 scored **below** greedy (24.0% against 27.0%). A grammar can only remove illegal
@@ -209,7 +231,7 @@ program searches every way of grouping 1–3 adjacent atoms into characters —
 with a third move available, dropping an atom as noise, because mud specks and
 rivets segment like characters too. Each grouping is scored against the Bharat
 plate grammar (`LL DD LLL DDDD`), which rules out whole families of errors: a
-digit can never win a letter slot. Five binarisation hypotheses are decoded and
+digit can never win a letter slot. Eight binarisation hypotheses are decoded and
 the highest-scoring read wins.
 
 **The classical classifier is trained in stages**, all on synthetic plates with
@@ -223,7 +245,7 @@ known ground truth:
    stage 1 discards — merged characters, mud-covered strokes, fragments glued
    back together.
 
-Held-out glyph accuracy: **98.7%** over 36 classes  from 46 986 training crops.
+Held-out glyph accuracy: **98.7%** over 36 classes, from 53 665 training crops.
 Plate-level accuracy is in the table below.
 
 **Confidence is the exact probability CTC assigns to the string it decoded.**
@@ -319,12 +341,16 @@ insets, because a box that carries a strip of bumper into the binariser reads
 worse than one cut slightly tight. The most confident legal read wins.
 
 **When it finds nothing it says why.** The dashboard draws the regions it
-examined and reports, in words, what failed: no plate-shaped region, or regions
-that held no arrangement of characters spelling a valid registration. That
+examined and reports, in words, what failed: no plate-shaped region; regions that
+held no arrangement of characters spelling a valid registration; or — most often —
+a candidate that did decode, but below the confidence floor, which is reported
+with the figure so an operator can see how close it came. That
 matters because the honest answer to "why did my photo of a notebook page not
-read?" is that this is a *number-plate* reader — the plate grammar is what buys
-the accuracy in the table below, and the same grammar is what makes it refuse
-handwriting, signage and arbitrary text. It is not a general OCR.
+read?" is that this is a *number-plate* reader. The plate grammar rules out whole
+families of misreads, and on the classical path it was worth several points; on
+the CRNN path what actually refuses handwriting, signage and arbitrary text is
+the confidence floor, which is why the refusal message quotes the floor rather
+than the grammar. It is not a general OCR.
 
 ### Measured accuracy
 
@@ -348,8 +374,9 @@ burst column judges the platform.
 | storm | 0% | 0% | 0/100 | — |
 | **overall** | **42.4%** | **73.1%** | **713/1000** | **96.2%** |
 
-1,000 plates, 100 per condition, five frames each — 5,000 reads in 427 s on a
-single CPU core. The dashboard renders the same `models/benchmark.json` this
+1,000 plates, 100 per condition. Each is decoded once as a single frame and
+again as a five-frame burst, so the run makes 6,000 reads — 427 s on a single CPU
+core, 14 plates/s. The dashboard renders the same `models/benchmark.json` this
 table is copied from, so the document and the running system cannot disagree:
 
 ```bash
@@ -376,7 +403,8 @@ Three conditions hold the average down, and they are not the same kind of proble
 * **`cheap_cam` (27%) and `far_lane` (67%) are not pixel-limited** — which is
   what an earlier version of this document claimed. Their information ceilings
   are 75% and 95%: the plate is in the image and the recogniser is not finding it.
-* Every other condition clears 80% on the burst path, and four clear 95%.
+* Everything else lands between 80% and 89% on the burst path, and three
+  conditions clear 95% — daylight and night_ir at 100%, monsoon at 98%.
 
 **Where the remaining accuracy is.** Across all conditions greedy decoding reads
 43.8%, while the true plate outranks 199 decoys 83.2% of the time. That ~40-point
@@ -574,9 +602,12 @@ rolling window — 5 minutes for `watchlist`, 30 for `clone` and `loitering`, 45
 `detour`, 120 for `odd_hour` — not once and for all, which is why a six-hour
 replay raises 115 watchlist alerts on five plates rather than five.
 
-A six-hour seeded day produces 185 alerts: 115 watchlist hits (five listed
-plates), 53 speeding, 14 detours, and the scripted clone and loiterer. Counts move
-with the seed — `python seed.py --hours 6` reproduces this one.
+A six-hour seeded day produces on the order of 185 alerts — one run gave 115
+watchlist hits (five listed plates), 53 speeding, 14 detours, plus the scripted
+clone and loiterer; another gave 123 / 45 / 18. The counts are not reproducible
+from the seed alone: `history()` anchors its window to `time.time()`, and the
+hour-of-day demand profile spans 0.1× to 1.0×, so seeding at 3 a.m. and at 6 p.m.
+generate different amounts of traffic and therefore different alert volumes.
 
 ---
 
