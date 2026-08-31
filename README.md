@@ -1,7 +1,8 @@
 # 👁 GodsEye — city-wide ANPR intelligence platform
 
-**SIH 2026 · Team Armageddon**
-**Theme: Smart Automation / Public Safety · Category: Software**
+**SIH 2026 · Team Prometheus**
+**Theme: Transportation & Logistics · Category: Software**  
+**Problem statement: City-Wide AI Engine for Multi-Camera ANPR Trajectory Tracking and Urban Traffic Analytics**
 
 Most cities already own the cameras. What they do not own is a system that joins
 those cameras together — that can take one plate number and reconstruct where
@@ -594,8 +595,8 @@ ones it ruled out with the reason.
 Every threshold here was set by measuring against the seeded database, not by
 taste. `detour` began as "took more than one hop", which fires on every ordinary
 journey because sightings are sparse whenever a read is dropped; then as "drove
-further than the direct distance", which fired on 28 % of all plates, because
-that is what a commute looks like. It now needs a vehicle to return to a camera
+further than the direct distance". The 28 % figure belongs to a third variant —
+1.6x the direct distance within an hour — which is what a commute looks like. It now needs a vehicle to return to a camera
 it already passed after covering four times the direct distance, which picks out
 4% of the plates seen. Alerts are de-duplicated per plate per rule within a
 rolling window — 5 minutes for `watchlist`, 30 for `clone` and `loitering`, 45 for
@@ -716,4 +717,4 @@ Pillow · NetworkX · pandas · SQLite (WAL) · FastAPI · Uvicorn · Streamlit 
 
 ## Team
 
-Built for SIH 2026 by **Team Armageddon**.
+Built for SIH 2026 by **Team Prometheus**.

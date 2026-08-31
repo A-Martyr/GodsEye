@@ -1,5 +1,5 @@
 # GodsEye - city-wide ANPR platform
-# SIH 2026 | Team Armageddon
+# SIH 2026 | Team Prometheus
 
 # The CRNN reader. Optional: without torch the platform falls back to the
 # classical segment-and-classify engine, which is slower and far less accurate

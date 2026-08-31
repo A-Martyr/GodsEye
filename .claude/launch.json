@@ -4,8 +4,26 @@
     {
       "name": "godseye-dashboard",
       "runtimeExecutable": "streamlit",
-      "runtimeArgs": ["run", "dashboard/app.py", "--server.port", "8501", "--server.headless", "true"],
+      "runtimeArgs": [
+        "run",
+        "dashboard/app.py",
+        "--server.port",
+        "8501",
+        "--server.headless",
+        "true"
+      ],
       "port": 8501
+    },
+    {
+      "name": "godseye-api",
+      "runtimeExecutable": "uvicorn",
+      "runtimeArgs": [
+        "api.main:app",
+        "--port",
+        "8000"
+      ],
+      "port": 8000,
+      "url": "http://localhost:8000"
     }
   ]
 }

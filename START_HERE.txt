@@ -1,4 +1,4 @@
-GodsEye - city-wide ANPR platform (SIH 2026, Team Armageddon)
+GodsEye - city-wide ANPR platform (SIH 2026, Team Prometheus)
 ===============================================================
 
 Two ways to look at this.
