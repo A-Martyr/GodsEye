@@ -1,0 +1,64 @@
+{
+  "note": "GodsEye geofence zones - core/geofence.py",
+  "zones": [
+    {
+      "id": "maidan-esplanade",
+      "name": "Maidan and Esplanade core",
+      "kind": "circle",
+      "lat": 22.556,
+      "lon": 88.35,
+      "radius_km": 1.6,
+      "points": [],
+      "note": "VIP movement and rally ground - the cordon drawn for an event",
+      "alert_on": "watchlist",
+      "alert_classes": [],
+      "severity": "",
+      "created_ts": 1788638969.1320367
+    },
+    {
+      "id": "salt-lake-sector-v",
+      "name": "Salt Lake and Sector V",
+      "kind": "polygon",
+      "lat": null,
+      "lon": null,
+      "radius_km": null,
+      "points": [
+        [
+          22.6125,
+          88.395
+        ],
+        [
+          22.6125,
+          88.485
+        ],
+        [
+          22.555,
+          88.485
+        ],
+        [
+          22.555,
+          88.395
+        ]
+      ],
+      "note": "IT corridor - the origin-destination question the transport cell asks",
+      "alert_on": "watchlist",
+      "alert_classes": [],
+      "severity": "",
+      "created_ts": 1788638969.1320486
+    },
+    {
+      "id": "airport-approach",
+      "name": "NSCBI Airport approach",
+      "kind": "circle",
+      "lat": 22.648,
+      "lon": 88.442,
+      "radius_km": 1.5,
+      "points": [],
+      "note": "One camera only - crossings cannot be observed, see observability()",
+      "alert_on": "watchlist",
+      "alert_classes": [],
+      "severity": "",
+      "created_ts": 1788638969.1320536
+    }
+  ]
+}

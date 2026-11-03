@@ -1,0 +1,103 @@
+# GodsEye - city-wide ANPR platform
+# SIH 2026 | Team Prometheus
+#
+# Three install groups. The default `pip install -r requirements.txt` gets you
+# groups 1-3 and a fully working platform on the CRNN reader. Groups 4 and 5
+# carry environment markers (`extra == ...`) that are FALSE unless pip is asked
+# for that extra, so a plain -r install skips them by design.
+#
+#   pip install -r requirements.txt              # groups 1-3, the platform
+#   pip install -r requirements-paddle.txt       # groups 1-5, the 91% reader
+#
+# Group 5 (anpr_ocr / paddle) needs Python 3.9-3.12. It CANNOT be installed on
+# 3.13 or 3.14 - paddle publishes no wheels. See PADDLE_SETUP.md.
+
+# =====================================================================
+# 1. Vision core - always required
+# =====================================================================
+numpy>=1.26,<3                   # known-good 2.5.2
+opencv-python-headless>=4.10     # known-good 5.0.0.93
+pillow>=10.3
+scikit-learn>=1.5                # the classical glyph MLP (models/glyph_mlp.joblib)
+scipy>=1.11                      # pulled in by scikit-learn; also needed by ppocr (group 5)
+joblib>=1.4
+ultralytics>=8.0                 # YOLOv8-OBB plate detector (models/yolov8n-obb-plate.pt)
+PyYAML>=6.0                      # ultralytics config; also needed by ppocr (group 5)
+
+# =====================================================================
+# 2. Platform - FastAPI service, simulator, analytics
+# =====================================================================
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.8
+python-multipart>=0.0.9
+networkx>=3.3
+pandas>=2.2
+
+# =====================================================================
+# 3. Dashboard - the Streamlit control room
+# =====================================================================
+# streamlit and altair are NOT optional for `streamlit run dashboard/app.py`.
+streamlit>=1.50
+pydeck>=0.9
+altair>=5.3
+requests>=2.32
+matplotlib>=3.8                  # font fallback for the plate renderer
+# The judge link is meant to be scanned, not typed. qr_png() swallows this
+# package's absence so a missing install cannot take the sidebar down - which
+# meant it went undeclared here, and any environment that did not happen to
+# have it showed a Judge link panel with no QR on it and no explanation.
+qrcode[pil]>=7.4
+
+# =====================================================================
+# 4. Neural extras - CRNN reader and EasyOCR comparison backend
+# =====================================================================
+# torch is optional: without it anpr/ocr.py falls back to the classical
+# segment-and-classify engine, which is slower and far less accurate on
+# realistic captures but needs no extra dependency.
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.0 ; extra == "neural"                   # known-good 2.14.0
+torchvision>=0.15 ; extra == "neural"            # known-good 0.29.0
+
+# EasyOCR: evaluation-only alternative recogniser (anpr/easyocr_reader.py,
+# anpr/compare_backends.py --real). Not on the default engine path - guarded
+# by try/except at every import site, same as torch above.
+easyocr>=1.7 ; extra == "neural"
+
+# =====================================================================
+# 5. anpr_ocr backend - the 91.0% real-photograph reader
+# =====================================================================
+# Awiros/anpr-ocr (PP-OCRv5, PPHGNetV2_B4, Apache-2.0), pretrained on 558,767
+# real Indian plates, driven by this repo's grammar-constrained decoder.
+# Evaluation-only and opt-in: passed to ANPREngine(anpr_ocr_reader=...), never
+# picked up implicitly. anpr/anpr_ocr_reader.py.
+#
+# PYTHON 3.9-3.12 ONLY. paddle has no 3.13/3.14 wheels.
+
+paddlepaddle>=2.6 ; extra == "paddle"            # known-good 3.3.1. No Metal/GPU on macOS.
+huggingface_hub>=0.20 ; extra == "paddle"        # _ensure_weights() downloads from the HF repo
+safetensors>=0.4 ; extra == "paddle"             # load() reads model.safetensors via safetensors.numpy
+
+# --- PaddleOCR's own dependencies ------------------------------------
+# _ensure_paddleocr() git-clones PaddlePaddle/PaddleOCR to make `ppocr`
+# importable, but it does NOT install that repo's requirements.txt. These are
+# the packages `from ppocr.postprocess import build_post_process` pulls in at
+# import time, traced through the actual import chain:
+#
+#   ppocr.postprocess.__init__
+#     -> db_postprocess     : shapely, pyclipper
+#     -> ct_postprocess     : pyclipper
+#     -> picodet_postprocess: scipy
+#     -> pg_postprocess -> ppocr.utils.e2e_utils.pgnet_pp_utils
+#                       -> extract_textpoint_slow : scikit-image
+#     -> ppocr.utils.poly_nms : shapely
+#
+# Without them load() raises ModuleNotFoundError, swallows it, and returns
+# None - which looks exactly like "the new engine silently isn't used".
+shapely>=2.0 ; extra == "paddle"
+pyclipper>=1.3 ; extra == "paddle"
+scikit-image>=0.22 ; extra == "paddle"
+
+# Also required by group 5, but NOT installable with pip:
+#   git   - on PATH. _ensure_paddleocr() shells out to `git clone`.
+#           On Windows, enable long paths first (see PADDLE_SETUP.md step 4).

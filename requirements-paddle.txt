@@ -1,0 +1,67 @@
+# GodsEye - complete dependency set for the .venv-paddle environment
+# (the 91.0% real-photograph reader, anpr/anpr_ocr_reader.py)
+#
+# PYTHON 3.12 ONLY. paddle publishes wheels for 3.9-3.12; 3.13 is unreliable
+# and 3.14 has nothing. Verify before installing:
+#
+#   .\.venv-paddle\Scripts\python.exe --version     # must say 3.12.x
+#
+# This file has no environment markers, so everything below actually installs.
+# Install torch FIRST from the CPU index, then this file:
+#
+#   .\.venv-paddle\Scripts\python.exe -m pip install torch torchvision \
+#       --index-url https://download.pytorch.org/whl/cpu
+#   .\.venv-paddle\Scripts\python.exe -m pip install -r requirements-paddle.txt
+#
+# torch is kept out of this file on purpose: plain `pip install torch` on
+# Windows/Linux pulls the multi-GB CUDA build from PyPI, and the reader pins
+# the device to CPU anyway (anpr/anpr_ocr_reader.py:459).
+#
+# Known-good: paddle 3.3.1, torch 2.14.0, numpy 2.5.2, opencv 5.0.0.93,
+# Python 3.12.13.
+
+# --- vision core -----------------------------------------------------
+numpy>=1.26,<3
+opencv-python-headless>=4.10
+pillow>=10.3
+scikit-learn>=1.5
+scipy>=1.11
+joblib>=1.4
+ultralytics>=8.0
+PyYAML>=6.0
+
+# --- platform --------------------------------------------------------
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.8
+python-multipart>=0.0.9
+networkx>=3.3
+pandas>=2.2
+
+# --- dashboard -------------------------------------------------------
+streamlit>=1.50
+pydeck>=0.9
+altair>=5.3
+requests>=2.32
+matplotlib>=3.8
+
+# --- anpr_ocr backend ------------------------------------------------
+paddlepaddle>=2.6
+huggingface_hub>=0.20
+safetensors>=0.4
+
+# PaddleOCR's own import-time dependencies. The git clone in
+# _ensure_paddleocr() does not install these; without them load() returns None.
+shapely>=2.0
+pyclipper>=1.3
+scikit-image>=0.22
+
+# --- optional --------------------------------------------------------
+# EasyOCR, the fourth comparison backend in anpr/compare_backends.py.
+# Only needed to reproduce the four-way table; skip it otherwise.
+# easyocr>=1.7
+
+# --- not installable with pip ----------------------------------------
+#   git   on PATH, for the PaddleOCR clone.
+#         Windows: enable long paths first, or the clone fails with
+#         "Filename too long" (PADDLE_SETUP.md step 4).

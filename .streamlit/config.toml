@@ -1,0 +1,115 @@
+# GodsEye - the control room's design system.
+#
+# Everything the dashboard's appearance can be driven from declaratively lives
+# here rather than in CSS injected from app.py. Streamlit applies these before
+# first paint, so there is no flash of a default theme and no layout settling
+# after load - and, unlike a stylesheet stapled on with unsafe_allow_html, none
+# of it can be broken by an internal class name changing under us.
+#
+# Three decisions shape the rest.
+#
+# Dark-first, not inverted. This is a room-monitoring surface someone watches
+# for an hour, so the ground is a soft near-black rather than #000: pure black
+# against light text maximises contrast, which is exactly what tires eyes over
+# a long session and what makes text edges shimmer on an LCD.
+#
+# Hierarchy from type and space, not boxes. Widget borders are off and the
+# remaining lines are barely above the background. Grouping is done by weight,
+# size and whitespace, which is how a dense product surface stays legible
+# instead of turning into a grid of competing rectangles.
+#
+# Colour means something. One accent, and it is not red. Red, orange and yellow
+# are spent on alert severity - a clone banner has to be the loudest thing on
+# screen, and it cannot be if the tab underline and every primary button are
+# already red, which is what Streamlit's stock #FF4B4B does.
+
+[theme]
+base = "dark"
+
+# System stack, deliberately, with no webfont. The platform is built to survive
+# venue wi-fi - the tunnel, the offline weight cache, the whole judge-link
+# ladder - and a dashboard that waits on fonts.googleapis.com to paint its
+# first frame would undo that for cosmetics. Segoe UI Variable on Windows 11
+# and SF on macOS are what the operating system's own product surfaces use,
+# which is most of the way to the look this is after, at zero latency.
+font = "Segoe UI Variable Text, Segoe UI, -apple-system, BlinkMacSystemFont, Inter, Helvetica Neue, Arial, sans-serif"
+headingFont = "Segoe UI Variable Display, Segoe UI, -apple-system, BlinkMacSystemFont, Inter, Helvetica Neue, Arial, sans-serif"
+codeFont = "Cascadia Code, Cascadia Mono, SF Mono, Consolas, Menlo, monospace"
+
+baseFontSize = 15
+baseFontWeight = 400
+
+# A compressed scale. Six heading levels at wildly different sizes is a
+# document convention; a control surface has at most three real levels, so the
+# steps are small and the work is done by weight. 600 rather than 700: bold
+# headings on a dark ground bloom, and the extra weight reads as shouting.
+headingFontSizes = ["1.55rem", "1.15rem", "0.95rem", "0.85rem", "0.8rem", "0.75rem"]
+headingFontWeights = [600, 600, 600, 550, 550, 550]
+
+# The headline numbers. Large enough to read across a room, light enough not to
+# look like a poster - and the unit that follows them is dimmed in CSS, because
+# "42" and "km/h" are not the same kind of information.
+metricValueFontSize = "2rem"
+metricValueFontWeight = 550
+
+# Near-black with a blue cast rather than neutral grey: the maps, the road
+# colouring and the accent are all cool, and a warm-grey ground fights them.
+backgroundColor = "#0B0E13"
+secondaryBackgroundColor = "#141924"
+textColor = "#DCE3EC"
+borderColor = "#1E2836"
+showWidgetBorder = false
+showSidebarBorder = true
+
+# One accent. A confident azure - present enough to mark the active tab and a
+# primary action, quiet enough that a red alert still wins the screen.
+primaryColor = "#3D7EFF"
+linkColor = "#6BA1FF"
+linkUnderline = false
+
+# Semantic palette, matched to SEVERITY_COLOUR in dashboard/app.py so an alert
+# rendered by Streamlit and one rendered by our own markup are the same red.
+redColor = "#E5484D"
+orangeColor = "#F76808"
+yellowColor = "#F5D90A"
+greenColor = "#30A46C"
+blueColor = "#3D7EFF"
+violetColor = "#8E4EC6"
+grayColor = "#7C8797"
+
+# Small, not rounded. Large radii read as consumer-friendly; this is an
+# instrument. Full-square reads as unfinished. 6px is the compromise every
+# serious product tool has independently landed on.
+baseRadius = "6px"
+buttonRadius = "6px"
+
+dataframeBorderColor = "#1E2836"
+dataframeHeaderBackgroundColor = "#141924"
+
+codeBackgroundColor = "#101620"
+codeTextColor = "#9FD5B0"
+codeFontSize = "0.82rem"
+
+# Chart series, in the order Altair will use them. Ordered by how much
+# attention each should pull, so a two-series chart is accent-plus-teal rather
+# than two colours competing.
+chartCategoricalColors = ["#3D7EFF", "#30A46C", "#F5A623", "#8E4EC6", "#E5484D", "#12A5B0"]
+chartSequentialColors = [
+    "#0E1620", "#12233A", "#153152", "#17406C", "#175086", "#1560A0",
+    "#2472B8", "#4189CC", "#63A3DD", "#8FBFEC",
+]
+
+# The sidebar is chrome, not content. Sinking it below the main ground and
+# dropping the type a size makes the page read as one surface with a control
+# rail, rather than two panes arguing about which is the subject.
+[theme.sidebar]
+backgroundColor = "#080B0F"
+secondaryBackgroundColor = "#121724"
+textColor = "#AEB9C7"
+borderColor = "#18202C"
+# No baseFontSize here. [theme.sidebar] does not accept it - Streamlit logs
+# "theme.sidebar.baseFontSize is not a valid config option" on every start and
+# ignores it, so the sidebar was never a size down from the main surface the
+# way the comment above claims. The rail is distinguished by its darker ground
+# and its border instead, which is doing the work anyway.
+showWidgetBorder = false
