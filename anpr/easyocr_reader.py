@@ -1,8 +1,8 @@
 """EasyOCR backend — an evaluated alternative, not a default engine path.
 
 Prompted by a real question: our CRNN (`anpr/crnn.py`) is trained entirely on
-synthetic captures and reads 0% of held-out real plates exactly right (see
-CLAUDE.md). EasyOCR is a pretrained scene-text reader trained on large
+synthetic captures and reads 0% of held-out real plates exactly right.
+EasyOCR is a pretrained scene-text reader trained on large
 real-world text corpora — the exact domain our CRNN never saw. This wrapper
 exists to measure whether that generalises to real plate crops, via
 `anpr/compare_backends.py --real`.

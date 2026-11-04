@@ -560,7 +560,7 @@ def chart_13_yolo_training():
     theme.headline(ax, "Fine-tuning the plate detector on real photographs",
                    "Each run resumes from the previous checkpoint. Treat the absolute value with "
                        "caution:\nthe split is image-level, so near-identical video frames leak across it.")
-    theme.source(fig, "runs/obb/runs/*/results.csv  ·  python train_yolo.py  ·  see CLAUDE.md on split leakage")
+    theme.source(fig, "runs/obb/runs/*/results.csv  ·  python train_yolo.py")
     return _save(fig, "13_yolo_training.png")
 
 

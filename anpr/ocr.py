@@ -307,7 +307,7 @@ class ANPREngine:
         # anpr/anpr_ocr_reader.py). Only used when explicitly passed in -
         # never picked up implicitly, unlike crnn/classical above - so the
         # default engine construction used by sim/api/dashboard is
-        # unaffected. See CLAUDE.md for why.
+        # unaffected.
         self.easyocr = easyocr_reader
         self.anpr_ocr = anpr_ocr_reader
         self.max_merge = max_merge
