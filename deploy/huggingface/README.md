@@ -31,6 +31,7 @@ Code, documentation and measured results:
 
 ## Updating this Space
 
-The Space builds from `Dockerfile`, which clones the GitHub repository at
-`GODSEYE_REF` (default `main`). After pushing to GitHub, rebuild the Space:
-Settings > Factory rebuild.
+Upload `deploy/Dockerfile` from the repository next to this README. The Space
+builds from it; it clones the GitHub repository at `GODSEYE_REF` (default
+`main`). After pushing to GitHub, rebuild the Space: Settings > Factory rebuild.
+Docker Spaces need a Hugging Face PRO plan.

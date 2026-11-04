@@ -1,0 +1,42 @@
+# Builds the read-only public demo (deploy/Dockerfile) and publishes it as
+# ghcr.io/a-martyr/godseye, which a host such as Azure App Service pulls.
+# Runs on every push to main and on demand (Actions > Demo image > Run).
+name: Demo image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: demo-image
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: deploy
+          file: deploy/Dockerfile
+          # build exactly the commit that triggered this run
+          build-args: GODSEYE_REF=${{ github.sha }}
+          push: true
+          tags: |
+            ghcr.io/a-martyr/godseye:latest
+            ghcr.io/a-martyr/godseye:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=GodsEye read-only public demo

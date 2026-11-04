@@ -75,9 +75,12 @@ refused with a 403 that says why, and the control room tells them so above
 *Live reads*. Requests from this machine or the LAN are unaffected. It is off by
 default.
 
-`deploy/huggingface/` hosts it as a free Hugging Face Space: a `Dockerfile` that
-clones this repository, installs the CPU reader, seeds a fresh city at every
-start (about 30 s) and runs with the access log off, and the Space's `README.md`.
+`deploy/Dockerfile` packages it: it clones this repository, installs the CPU
+reader, seeds a fresh city at every start (about 30 s) and runs with the access
+log off. GitHub Actions builds it on every push to `main` as
+`ghcr.io/a-martyr/godseye`, and `deploy/azure.md` hosts that image on Azure App
+Service (an Azure for Students subscription covers it). `deploy/huggingface/`
+holds the card for a Hugging Face Docker Space, which now needs a paid plan.
 The demo keeps no record of its visitors; `web/privacy.html` (served at
 `/privacy`) says exactly what it does and does not store.
 

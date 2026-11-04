@@ -1,8 +1,12 @@
-# GodsEye as a Hugging Face Space: the read-only public demo.
+# GodsEye's read-only public demo as a container image.
 #
-# The Space holds only this file and README.md; the code is cloned from the
-# public GitHub repository at GODSEYE_REF, so the Space always runs what the
-# repository says. Rebuild the Space (Settings > Factory rebuild) after a push.
+# The code is cloned from the public GitHub repository at GODSEYE_REF, so the
+# image always runs what the repository says. Two ways it is hosted:
+#   - Azure App Service (deploy/azure.md): GitHub Actions builds this file on
+#     every push to main and publishes ghcr.io/a-martyr/godseye:latest;
+#     restart the web app to pick up a new build.
+#   - A Hugging Face Docker Space (deploy/huggingface/): upload this file with
+#     that folder's README.md; Settings > Factory rebuild after a push.
 #
 # Runs the default CRNN reader on the CPU (about 600 MB resident). The
 # real-photo reader (paddle, ~4 GB with its weights) is left out on purpose:
@@ -32,7 +36,7 @@ RUN pip install --no-cache-dir --user torch torchvision --index-url https://down
 ENV GODSEYE_PUBLIC_DEMO=1 GODSEYE_JUDGE=0 GODSEYE_DEVICE=cpu GODSEYE_OCR_BACKEND=crnn
 
 EXPOSE 7860
-# A Space's disk is reset on every restart, so each start seeds a fresh six
+# The container's disk is reset on every restart, so each start seeds a fresh six
 # hours of city traffic (about 30 s) and the live feed carries on from there.
 # --no-access-log: the demo keeps no record of who visited (web/privacy.html says so)
 CMD ["sh", "-c", "python seed.py && exec uvicorn api.main:app --host 0.0.0.0 --port 7860 --no-access-log"]
