@@ -4,6 +4,10 @@
 **Theme: Transportation & Logistics · Category: Software**  
 **Problem statement: City-Wide AI Engine for Multi-Camera ANPR Trajectory Tracking and Urban Traffic Analytics**
 
+![The GodsEye control room: a misread plate, FB58AQ4404, finds the vehicle PB58AQ4404 and rebuilds its route across 13 Kolkata junctions](screenshots/2_misread_search_route.jpg)
+
+*The control room: a search for a misread plate finds the vehicle and rebuilds its route across the camera network. Simulated camera feed; the plates are generated.*
+
 > **Public build for YUKTI 2026.** Everything needed to run GodsEye and its 101-check
 > self-test is here. The real-photograph evaluation corpus (plate crops derived from a
 > CC BY-NC-ND dataset, and real vehicles' registrations) and the team's internal notes
