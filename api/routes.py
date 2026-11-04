@@ -37,8 +37,12 @@ def _records(df: pd.DataFrame) -> list[dict]:
 
 # --- platform -----------------------------------------------------------
 @router.get("/health", summary="Service health and live counters")
-def health():
-    return state.status()
+def health(request: Request):
+    out = state.status()
+    # Whether *this* caller is on the read-only public demo, so the control
+    # room can say so before a button is refused.
+    out["read_only"] = config.PUBLIC_DEMO and reach.is_public_host(request.headers.get("host", ""))
+    return out
 
 
 @router.get("/network", summary="Camera network as a graph")

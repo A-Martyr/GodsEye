@@ -73,7 +73,16 @@ async def restrict_public_origin(request: Request, call_next):
     path = request.url.path
     if reach.is_public_host(request.headers.get("host", "")) and not (
             path in PUBLIC_PATHS or any(path.startswith(p + "/") for p in PUBLIC_PATHS)):
-        return JSONResponse({"detail": "not found"}, status_code=404)
+        # A hosted public demo (config.PUBLIC_DEMO) opens the reads to the
+        # public hostname and nothing else: every write is a GET-less method,
+        # so refusing those refuses every change a stranger could make. The
+        # judge paths above keep their own token guard either way.
+        if not config.PUBLIC_DEMO:
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        if request.method not in ("GET", "HEAD"):
+            return JSONResponse({"detail": "This is the read-only public demo. "
+                                           "Run GodsEye locally to change anything."},
+                                status_code=403)
     return await call_next(request)
 
 

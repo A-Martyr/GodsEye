@@ -429,6 +429,15 @@ CLONE_ALARM_FILE = Path(os.getenv("GODSEYE_CLONE_ALARM_FILE", ASSET_DIR / "red_a
 # public-origin restriction in api/main.py. Turn it off outside a demo.
 JUDGE_CONSOLE_ENABLED = os.getenv("GODSEYE_JUDGE", "1") not in ("0", "false", "False")
 
+# A permanently hosted, read-only demo, such as a Hugging Face Space. On a
+# public hostname the API normally serves the judge console and nothing else
+# (api/main.py). With this on it also serves the control room and every read,
+# so anyone with the link can watch the city, search a plate and see a route,
+# and it still refuses everything that changes state: photo uploads, captures,
+# the incident injectors, the watchlist, alert acknowledgements, repair runs.
+# Off by default, so a laptop demo is exactly as it was.
+PUBLIC_DEMO = os.getenv("GODSEYE_PUBLIC_DEMO", "0") not in ("0", "false", "False")
+
 # --- reaching the judge, wherever they are -------------------------------
 # The LAN link only works if the judge is standing in the same room on the
 # same network. A quick tunnel gives a public HTTPS URL that works from any

@@ -842,7 +842,19 @@ function connect() {
 }
 
 // ---------- boot ----------
+async function markReadOnly() {
+  // On the hosted public demo every change is refused by the API; say so up
+  // front rather than letting a button discover it.
+  try {
+    const h = await api('/api/health');
+    if (!h.read_only) return;
+    const note = $('.provline');
+    if (note) note.insertAdjacentHTML('afterbegin', '<b>Read-only public demo:</b> watch the city, search a plate, follow a route. Run GodsEye locally to upload photos, inject incidents or change the watchlist.<br>');
+  } catch { /* the badge is a courtesy */ }
+}
+
 (async function boot() {
+  markReadOnly();
   try { await loadNetwork(); }
   catch (err) { toast(`Could not load the camera network: ${err.message}`); }
   await Promise.all([loadFeed(), loadAlerts(), refreshSummary(), refreshLinks()]);
