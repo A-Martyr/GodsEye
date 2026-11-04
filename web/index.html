@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0c1015">
 <title>GodsEye · Kolkata control room</title>
 <meta name="description" content="City-wide number-plate reading and vehicle-route reconstruction over 35 Kolkata junctions. Search a plate, even a misread one, and follow the route. Simulated city; read-only demo.">
 <meta name="color-scheme" content="dark">
@@ -97,10 +98,17 @@
 
 <!-- Left sheet: live reads, reading a plate, and a vehicle once one is opened. -->
 <aside class="sheet side" id="side" aria-label="Operator panel">
-  <nav class="seg" aria-label="Panel">
-    <button type="button" data-view="feed" class="on" aria-pressed="true"><svg><use href="#i-feed"/></svg>Live reads</button>
-    <button type="button" data-view="read" aria-pressed="false"><svg><use href="#i-scan"/></svg>Read a plate</button>
-  </nav>
+  <!-- On a phone this panel is a bottom sheet: the grip and the tab strip
+       drag it between its rests, and the alerts become its third tab. -->
+  <div class="sheet-head">
+    <button type="button" class="grip" aria-label="Expand panel"></button>
+    <nav class="seg" aria-label="Panel">
+      <button type="button" data-view="feed" class="on" aria-pressed="true"><svg><use href="#i-feed"/></svg>Live reads</button>
+      <button type="button" data-view="read" aria-pressed="false"><svg><use href="#i-scan"/></svg>Read a plate</button>
+      <button type="button" data-view="alerts" aria-pressed="false"><svg><use href="#i-alert"/></svg>Alerts<span class="seg-n" id="alerts-tab-n" hidden></span></button>
+    </nav>
+  </div>
+  <div class="sheet-body">
 
   <!-- Live reads -->
   <section class="view" data-view="feed">
@@ -158,6 +166,7 @@
     </div>
     <div id="vehicle"></div>
   </section>
+  </div>
 </aside>
 
 <!-- Insights drawer: everything beyond the live task. -->
@@ -171,10 +180,12 @@
     </nav>
     <button class="icon-btn" id="drawer-close" type="button" aria-label="Close insights"><svg><use href="#i-close"/></svg></button>
   </header>
-  <div class="tab" data-tab="analytics"></div>
-  <div class="tab" data-tab="engine" hidden></div>
-  <div class="tab" data-tab="incidents" hidden></div>
-  <div class="tab" data-tab="privacy" hidden></div>
+  <div class="drawer-body">
+    <div class="tab" data-tab="analytics"></div>
+    <div class="tab" data-tab="engine" hidden></div>
+    <div class="tab" data-tab="incidents" hidden></div>
+    <div class="tab" data-tab="privacy" hidden></div>
+  </div>
 </aside>
 
 <!-- Alert stack -->

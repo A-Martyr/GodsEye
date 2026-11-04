@@ -78,9 +78,10 @@ function padOpts() {
   const side = $('#side').getBoundingClientRect();
   const alerts = $('#alerts').getBoundingClientRect();
   const wide = window.innerWidth > 760;
-  return wide
-    ? { paddingTopLeft: [side.right + 30, 90], paddingBottomRight: [alerts.width + 40, 40] }
-    : { padding: [24, 24] };
+  if (wide) return { paddingTopLeft: [side.right + 30, 90], paddingBottomRight: [alerts.width + 40, 40] };
+  // Phone: frame what is left between the top bar and the sheet's rest.
+  const top = $('.topbar').getBoundingClientRect().bottom;
+  return { paddingTopLeft: [20, top + 16], paddingBottomRight: [20, Math.min(SHEET.h, window.innerHeight * .6) + 16] };
 }
 
 async function loadNetwork() {
@@ -174,8 +175,107 @@ function show(view) {
     b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on));
   }
 }
-for (const b of $$('#side .seg button')) b.addEventListener('click', () => { clearTrack(); show(b.dataset.view); });
+for (const b of $$('#side .seg button')) b.addEventListener('click', () => { clearTrack(); show(b.dataset.view); sheetAtLeast('half'); });
 $('#v-back').addEventListener('click', () => { clearTrack(); show(LAST_TAB); });
+
+// ---------- phone: the panel as a bottom sheet ----------
+// Under 760 px the panel is a sheet over the map with three rests, as in a
+// maps app: a peek at the live feed, half the screen, and full height under
+// the search bar. The grip and the tab strip drag it (a flick carries it on
+// to the next rest); a tap on the grip steps it up. The alert stack, a
+// separate card on a desktop, moves in as the sheet's third tab.
+const PHONE = matchMedia('(max-width: 760px)');
+const SIDE = $('#side'); const SHEET_HEAD = $('#side .sheet-head'); const SHEET_BODY = $('#side .sheet-body');
+const GRIP = $('#side .grip'); const ALERT_CARD = $('#alerts');
+const RESTS = ['peek', 'half', 'full'];
+const SHEET = { h: 0, rest: 'peek' };
+function sheetRests() {
+  const vh = window.innerHeight;
+  const top = $('.topbar').getBoundingClientRect().bottom + 10;
+  const safe = parseFloat(getComputedStyle(SHEET_BODY).paddingBottom) - 16 || 0;
+  // Peek ends cleanly under the open view's heading: tabs, title, latest time.
+  const peek = Math.round(Math.min(SHEET_HEAD.offsetHeight + 56 + safe, vh * .4));
+  return { peek, half: Math.max(peek, Math.round(vh * .5)), full: Math.max(peek, Math.round(vh - top)) };
+}
+function setSheetH(h, animate) {
+  SHEET.h = h;
+  document.documentElement.classList.toggle('sheet-drag', !animate);
+  document.documentElement.style.setProperty('--sheet-h', `${Math.round(h)}px`);
+}
+function snapSheet(rest) {
+  SHEET.rest = rest; SIDE.dataset.rest = rest;
+  setSheetH(sheetRests()[rest], true);
+  GRIP.setAttribute('aria-label', rest === 'full' ? 'Collapse panel' : 'Expand panel');
+}
+function sheetAtLeast(rest) {
+  if (PHONE.matches && RESTS.indexOf(SHEET.rest) < RESTS.indexOf(rest)) snapSheet(rest);
+}
+// Where a released drag settles: project the sheet's height a little way
+// along the flick, then take the nearest rest to that point.
+function restFor(h, velocity) {
+  const r = sheetRests(); const aim = h + velocity * 180;
+  return RESTS.reduce((a, b) => (Math.abs(r[b] - aim) < Math.abs(r[a] - aim) ? b : a));
+}
+
+let DRAG = null; let DRAGGED = false;
+SHEET_HEAD.addEventListener('pointerdown', (e) => {
+  if (!PHONE.matches || e.button > 0) return;
+  DRAG = { id: e.pointerId, y0: e.clientY, h0: SHEET.h, moved: false, trail: [[e.timeStamp, e.clientY]] };
+});
+// Moves and releases are heard on the window: a fast flick can leave the
+// strip before the first move event arrives.
+window.addEventListener('pointermove', (e) => {
+  if (!DRAG || e.pointerId !== DRAG.id) return;
+  const dy = e.clientY - DRAG.y0;
+  if (!DRAG.moved) {
+    if (Math.abs(dy) < 6) return;          // still a tap
+    DRAG.moved = true; SHEET_HEAD.setPointerCapture(e.pointerId);
+  }
+  const r = sheetRests(); let h = DRAG.h0 - dy;
+  if (h > r.full) h = r.full + (h - r.full) * .2;   // rubber-band past the ends
+  if (h < r.peek) h = r.peek - (r.peek - h) * .2;
+  setSheetH(h, false);
+  DRAG.trail.push([e.timeStamp, e.clientY]); if (DRAG.trail.length > 5) DRAG.trail.shift();
+});
+function endDrag(e) {
+  if (!DRAG || e.pointerId !== DRAG.id) return;
+  const d = DRAG; DRAG = null;
+  if (!d.moved) return;
+  const [t0, y0] = d.trail[0];
+  const velocity = (y0 - e.clientY) / Math.max(16, e.timeStamp - t0);   // px per ms, upward positive
+  snapSheet(restFor(SHEET.h, velocity));
+  DRAGGED = true; setTimeout(() => { DRAGGED = false; }, 80);
+}
+window.addEventListener('pointerup', endDrag);
+window.addEventListener('pointercancel', endDrag);
+// A drag that ends over a tab must not also switch to that tab.
+SHEET_HEAD.addEventListener('click', (e) => { if (DRAGGED) { e.stopPropagation(); e.preventDefault(); } }, true);
+GRIP.addEventListener('click', () => snapSheet({ peek: 'half', half: 'full', full: 'peek' }[SHEET.rest]));
+
+const ATTR_PREFIX = MAP.attributionControl.options.prefix;
+function placeAlerts() {
+  // The OpenStreetMap credit must stay readable on one line; Leaflet's own
+  // prefix is a courtesy and gives way on a phone.
+  MAP.attributionControl.setPrefix(PHONE.matches ? false : ATTR_PREFIX);
+  if (PHONE.matches) {
+    if (ALERT_CARD.parentElement !== SHEET_BODY) {
+      SHEET_BODY.append(ALERT_CARD);
+      ALERT_CARD.classList.add('view'); ALERT_CARD.dataset.view = 'alerts'; ALERT_CARD.hidden = VIEW !== 'alerts';
+    }
+    snapSheet(SHEET.rest);
+  } else {
+    if (ALERT_CARD.parentElement === SHEET_BODY) {
+      document.body.insertBefore(ALERT_CARD, $('.key-chip'));
+      ALERT_CARD.classList.remove('view'); delete ALERT_CARD.dataset.view; ALERT_CARD.hidden = false;
+      if (VIEW === 'alerts') show('feed');
+    }
+    document.documentElement.style.removeProperty('--sheet-h');
+  }
+}
+PHONE.addEventListener('change', placeAlerts);
+window.addEventListener('resize', () => { if (PHONE.matches && !DRAG) snapSheet(SHEET.rest); });
+document.fonts?.ready.then(() => { if (PHONE.matches) snapSheet(SHEET.rest); });
+placeAlerts();
 
 // ---------- live reads ----------
 const FEED_MAX = 40;
@@ -298,6 +398,7 @@ function addAlert(a, isNew) {
 let ALERT_SUM = null;
 function renderAlertMeta() {
   const crit = $$('#alerts-list .alert.crit').length;
+  const n = $('#alerts-tab-n'); n.textContent = crit > 9 ? '9+' : String(crit); n.hidden = !crit;
   if (!crit && !$('.alerts-empty')) $('#alerts-list').innerHTML = '<p class="alerts-empty">Nothing needs action. Cloned plates and watchlist hits appear here the moment the rules catch them.</p>';
   if (!ALERT_SUM) return;
   const k = ALERT_SUM.by_kind || {};
@@ -377,6 +478,7 @@ async function openVehicle(plate, query, distance) {
   if (!plate) return;
   CUR = { plate, query: query || null, distance: distance || 0 };
   show('vehicle');
+  if (PHONE.matches) { snapSheet('half'); $('#q').blur(); }   // show the route, put the keyboard away
   closeSpot();
   await renderVehicle();
 }
