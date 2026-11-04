@@ -12,8 +12,10 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import config
 from api.routes import router
@@ -97,6 +99,48 @@ app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 @app.get("/", include_in_schema=False)
 def root():
     return FileResponse(WEB_DIR / "index.html")
+
+
+# The page files a browser asks for at the root, and the privacy page. The
+# control room's code, styles and fonts are about 330 KB as written; compressed
+# they cross the network at a fraction of that.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+@app.get("/privacy", include_in_schema=False)
+def privacy_page():
+    return FileResponse(WEB_DIR / "privacy.html")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return RedirectResponse("/static/favicon.svg", status_code=301)
+
+
+@app.get("/robots.txt", include_in_schema=False)
+def robots():
+    # The control room and the privacy page may be indexed; the API may not.
+    return PlainTextResponse("User-agent: *\nAllow: /$\nAllow: /privacy\nAllow: /static/\nDisallow: /api/\nDisallow: /j\nDisallow: /docs\n")
+
+
+NOT_FOUND_PAGE = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Not found · GodsEye</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><style>
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0c1015;color:#a7b2bf;
+font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;text-align:center}
+h1{color:#e7ecf1;font-size:24px;margin:0 0 8px}a{color:#4d84ff}</style></head><body><main>
+<h1>Nothing at this address</h1><p>The camera network is still watching, just not here.</p>
+<p><a href="/">Open the control room</a></p></main></body></html>"""
+
+
+@app.exception_handler(StarletteHTTPException)
+async def not_found_for_people(request: Request, exc: StarletteHTTPException):
+    # A person who mistypes an address gets a page with a way back; the API,
+    # and anything that did not ask for HTML, keeps its JSON errors.
+    if (exc.status_code == 404 and not request.url.path.startswith("/api")
+            and "text/html" in request.headers.get("accept", "")):
+        return HTMLResponse(NOT_FOUND_PAGE, status_code=404)
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=getattr(exc, "headers", None))
 
 
 @app.get("/api", include_in_schema=False)

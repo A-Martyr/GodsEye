@@ -33,5 +33,6 @@ ENV GODSEYE_PUBLIC_DEMO=1 GODSEYE_JUDGE=0 GODSEYE_DEVICE=cpu GODSEYE_OCR_BACKEND
 
 EXPOSE 7860
 # A Space's disk is reset on every restart, so each start seeds a fresh six
-# hours of city traffic (about 15 s) and the live feed carries on from there.
-CMD ["sh", "-c", "python seed.py && exec uvicorn api.main:app --host 0.0.0.0 --port 7860"]
+# hours of city traffic (about 30 s) and the live feed carries on from there.
+# --no-access-log: the demo keeps no record of who visited (web/privacy.html says so)
+CMD ["sh", "-c", "python seed.py && exec uvicorn api.main:app --host 0.0.0.0 --port 7860 --no-access-log"]

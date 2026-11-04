@@ -63,7 +63,7 @@ L.control.zoom({ position: 'bottomright' }).addTo(MAP);
 // them into a quiet dark ground; the camera network is the information layer.
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 18,
-  attribution: '&copy; OpenStreetMap contributors · GodsEye prototype',
+  attribution: '&copy; OpenStreetMap contributors · GodsEye prototype · <a href="https://github.com/A-Martyr/GodsEye" target="_blank" rel="noopener">Source</a> · <a href="/privacy">Privacy</a>',
 }).addTo(MAP);
 
 // A road with no reads in the window stays a neutral grey: no data is not "free".

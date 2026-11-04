@@ -65,6 +65,22 @@ usually the local ISP resolver rather than a broken tunnel — check it against
 `1.1.1.1` before assuming the link is dead. The people you sent it to are on
 different resolvers and are generally unaffected.
 
+## A permanent, read-only public demo
+
+`GODSEYE_PUBLIC_DEMO=1` opens the control room to a public hostname, where the
+API otherwise serves only the judge console. Visitors can watch the city, search
+a plate and follow a route; everything that changes state (photo uploads,
+captures, the incident injectors, the watchlist, alert acknowledgements) is
+refused with a 403 that says why, and the control room tells them so above
+*Live reads*. Requests from this machine or the LAN are unaffected. It is off by
+default.
+
+`deploy/huggingface/` hosts it as a free Hugging Face Space: a `Dockerfile` that
+clones this repository, installs the CPU reader, seeds a fresh city at every
+start (about 30 s) and runs with the access log off, and the Space's `README.md`.
+The demo keeps no record of its visitors; `web/privacy.html` (served at
+`/privacy`) says exactly what it does and does not store.
+
 ## What to try first
 
 - **The map** — the Kolkata camera network, roads coloured by congestion, with
