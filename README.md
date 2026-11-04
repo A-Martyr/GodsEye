@@ -8,6 +8,8 @@
 
 *The control room: a search for a misread plate finds the vehicle and rebuilds its route across the camera network. Simulated camera feed; the plates are generated.*
 
+**Live demo (read-only): [godseye-kolkata-fpech9f9drfwfrf7.uaenorth-01.azurewebsites.net](https://godseye-kolkata-fpech9f9drfwfrf7.uaenorth-01.azurewebsites.net)** — watch the simulated city, search a plate (even a misread one) and follow its route. Works on a phone.
+
 > **Public build for YUKTI 2026.** Everything needed to run GodsEye and its 101-check
 > self-test is here. The real-photograph evaluation corpus (plate crops derived from a
 > CC BY-NC-ND dataset, and real vehicles' registrations) and the team's internal notes

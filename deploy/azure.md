@@ -1,5 +1,7 @@
 # Hosting the public demo on Azure App Service
 
+Live: https://godseye-kolkata-fpech9f9drfwfrf7.uaenorth-01.azurewebsites.net (UAE North; Central India is not open to this student subscription).
+
 The read-only demo runs as a container on one Basic (B1) Linux web app: 1.75 GB
 of memory, always on, at about US$13 a month. An *Azure for Students*
 subscription carries US$100 of credit with no card and a spending limit, so it
@@ -12,10 +14,10 @@ out the app simply stops.
 `main` and publishes it as `ghcr.io/a-martyr/godseye:latest`. Check the run
 under the repository's **Actions** tab (about 10 minutes the first time).
 
-The first publish creates the package as **private**. Make it public once:
-GitHub profile > **Packages** > `godseye` > **Package settings** > *Danger
-Zone* > **Change visibility** > Public. App Service can then pull it without a
-password.
+The package takes the public repository's visibility, so App Service can pull
+it without a password. If it ever shows as private, make it public: GitHub
+profile > **Packages** > `godseye` > **Package settings** > *Danger Zone* >
+**Change visibility** > Public.
 
 ## The web app (Azure portal)
 
@@ -27,10 +29,15 @@ password.
    few; if one is refused, try another); pricing plan: new, **Basic B1**.
 3. *Container*: image source **Other container registries**; access **Public**;
    registry server `https://ghcr.io`; image and tag `a-martyr/godseye:latest`;
-   startup command empty.
-4. **Review + create** > **Create**, then **Go to resource**.
-5. **Settings > Environment variables** > add `WEBSITES_PORT` = `7860` and
-   `WEBSITES_CONTAINER_START_TIME_LIMIT` = `600`; **Apply**.
+   startup command empty. The newer *sidecar* form asks for the port on this
+   tab: set **Port** to `7860`.
+4. **Review + create** > **Create**, then **Go to resource**. If Azure refuses
+   the region, list the ones the subscription allows in Cloud Shell with
+   `az policy assignment list --disable-scope-strict-match --query
+   "[].parameters.listOfAllowedLocations.value"`.
+5. **Settings > Environment variables** > add
+   `WEBSITES_CONTAINER_START_TIME_LIMIT` = `600` (and `WEBSITES_PORT` = `7860`
+   if the form did not ask for the port); **Apply**.
 6. **Settings > Configuration > General settings**: **Always on: On**,
    **Web sockets: On** (the live feed is a websocket); **Save**.
 7. **Overview** > **Restart**. The first start pulls the image and seeds the city;
