@@ -121,30 +121,24 @@ critical queue.
 
 | | |
 |---|---|
-| Imports | **nothing** in `anpr/`, `core/`, `api/`, `sim/`, `dashboard/`, `livecam/` or `phonecam/` imports this package |
+| Imports | **nothing** outside `registry/` imports this package |
 | Platform database | opened `mode=ro` — a mistake here **cannot** write to `data/godseye.db`; enforced by SQLite, verified by test |
 | Own storage | `data/registry.db`, its own file |
 | Engine imports | **nothing** in `anpr/`, `core/`, `api/` or `sim/` imports this package |
-| Dashboard imports | one file — `dashboard/registry_link.py`, a soft import that degrades to "unavailable" |
-| Own ports | 8506 (console) and 8507 (service), clear of 8000/8501/8502/8503/8504/8505 |
+| Own ports | 8506 (console) and 8507 (service), clear of 8000/8503/8504/8505 |
 | Own interpreter needs | none beyond the platform's — no paddle, no GPU, so it never takes a CUDA context off the cameras |
-| Existing files changed | `stop.bat` (two `killport` lines) and `dashboard/app.py` (the panels below) |
+| Existing files changed | `stop.bat` (two `killport` lines) |
 
-### The guarantee, restated honestly
+### The guarantee
 
-The control room **does** now import this package, so "no platform module
-imports registry/" is no longer the promise — it was only ever a proxy for the
-thing that matters:
+> **Delete `registry/` and the platform cannot notice.**
 
-> **Delete `registry/` and the dashboard still works.**
-
-That is now an executed test rather than an assertion. `registry/selftest.py`
-launches a subprocess with `registry` made unimportable, loads
-`dashboard/registry_link.py`, and requires every entry point to return empty
-rather than raise. The engine is still hard-isolated, and checked separately —
-nothing on the path from a camera to a stored sighting may know this package
-exists, which is what keeps a slow registry structurally incapable of costing a
-plate read a millisecond.
+The control room (`web/`) shows the mock registry record from
+`core/registry.py`, not this package, so nothing outside `registry/` imports it;
+`registry/selftest.py` checks that. The engine is hard-isolated, and checked
+separately — nothing on the path from a camera to a stored sighting may know this
+package exists, which is what keeps a slow registry structurally incapable of
+costing a plate read a millisecond.
 
 The dependency still points one way: `registry/live.py` *reads* the platform's
 sightings; the platform never calls into the registry. Enrichment lives here
@@ -217,18 +211,16 @@ del registry.bat
 del data\registry.db
 ```
 
-**The dashboard keeps working after exactly that** — `registry_link.available()`
-goes False and every panel renders nothing. It is the property `selftest.py`
-executes rather than asserts, so it is true or the test fails.
+**The platform keeps working after exactly that**: nothing outside this folder
+imports it, which `selftest.py` checks, so it is true or the test fails.
 
 `data/godseye.db` never had anything written to it by this package, so there is
-no data to unwind. Two pre-existing files carry edits, and neither needs
+no data to unwind. One pre-existing file carries an edit, and it needs no
 reverting for the demo to run:
 
 | File | Edit | If you also want it gone |
 |---|---|---|
 | `stop.bat` | two `killport` lines for 8506/8507 | delete them; leaving them just prints "nothing was listening" |
-| `dashboard/app.py` | `import registry_link` + the panel calls | delete `dashboard/registry_link.py` too and remove the handful of `registry_link.` lines |
 
 To keep the code but stop using it, simply do not start the console. Nothing
 runs on a timer and nothing hooks into the platform's ingest path.
@@ -248,6 +240,5 @@ runs on a timer and nothing hooks into the platform's ingest path.
 | `service.py` | The HTTP surface on 8507: the registry's `GET /api/v1/vehicles/{reg}`, and the simulated authority's `POST /api/v1/authority/incidents` |
 | `live.py` | The chain: camera read → lookup → assessment → incident → authority. Reads the platform, is never called by it |
 | `console.py` | The Streamlit console on 8506 |
-| `../dashboard/registry_link.py` | The one adapter the control room reaches this package through — soft import, degrades to nothing |
 | `selftest.py` | Isolation and behaviour checks, nothing running required |
 | `integrationtest.py` | The four failure modes against the live service, with the cameras probed at every step |

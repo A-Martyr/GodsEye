@@ -6,9 +6,7 @@ title GodsEye - stop
 echo.
 echo   Stopping the GodsEye demo ...
 
-call :killport 8501 "control room"
-call :killport 8000 "API"
-call :killport 8502 "real-photograph reader"
+call :killport 8000 "API and control room"
 
 rem The two live-camera demos. Not started by demo.bat - livecam_web.bat and
 rem phonecam.bat launch them - but stopped here anyway, because both hold the

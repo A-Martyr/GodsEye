@@ -9,8 +9,8 @@ control room. Two reasons, and the second is the one that matters:
 
   It has to be removable. This whole package was built on the promise that the
   working demo is not disturbed, and a separate process on a separate port with
-  its own database is removable by deleting a folder. A tab wired into
-  dashboard/app.py would not be.
+  its own database is removable by deleting a folder. A tab wired into the
+  control room would not be.
 
     python -m registry.console          ->  http://localhost:8506
 """

@@ -1286,7 +1286,7 @@ privacy.posture()                            # the whole picture, with caveats
 
 Two cautions when reproducing:
 
-- Run with `GODSEYE_DEVICE=cpu` if the GPU reader is up on 8502. `convoy` imports
+- Run with `GODSEYE_DEVICE=cpu` if a GPU reader is already running. `convoy` imports
   `anpr.ocr.confusion_distance` lazily, and a second CUDA context on a 4 GB card
   starves the reader (see `PERFORMANCE.md`).
 - Figures move as the live feed writes. The **shape** of every result above

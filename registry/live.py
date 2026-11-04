@@ -2,8 +2,8 @@
 
     phone camera -> plate -> registry lookup -> assessment -> incident -> authority
 
-The dependency runs ONE WAY, deliberately. Nothing in anpr/, core/, api/, sim/
-or dashboard/ imports this package - registry/selftest.py asserts it - so this
+The dependency runs ONE WAY, deliberately. Nothing outside registry/ imports
+this package - registry/selftest.py asserts it - so this
 module reaches into the platform rather than being called by it, and always
 read-only. That is what keeps "delete registry/ and the demo is exactly as it
 was" true, and it is why enrichment happens here instead of inside the camera

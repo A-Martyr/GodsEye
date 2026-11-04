@@ -67,8 +67,8 @@ primaryColor = "#3D7EFF"
 linkColor = "#6BA1FF"
 linkUnderline = false
 
-# Semantic palette, matched to SEVERITY_COLOUR in dashboard/app.py so an alert
-# rendered by Streamlit and one rendered by our own markup are the same red.
+# Semantic palette, the control room's alert colours, so the registry console's
+# alerts are the same red as everywhere else.
 redColor = "#E5484D"
 orangeColor = "#F76808"
 yellowColor = "#F5D90A"

@@ -25,9 +25,9 @@ if not exist ".venv-paddle\Scripts\python.exe" (
   exit /b %errorlevel%
 )
 
-rem One CUDA context at a time on this card - sharing it with the API or the
-rem 8502 dashboard starves both by roughly 50x. See RUNBOOK.md.
-echo [phonecam] Stop the paddle dashboard on 8502 first, if it is running.
+rem One CUDA context at a time on this card - sharing it with an API that is
+rem also on the GPU starves both by roughly 50x. See RUNBOOK.md.
+echo [phonecam] If the API is running, start it with GODSEYE_DEVICE=cpu so this reader gets the GPU.
 echo [phonecam] Phones must be on the same Wi-Fi as this laptop.
 ".venv-paddle\Scripts\python.exe" -m phonecam.server %*
 endlocal

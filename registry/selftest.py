@@ -65,8 +65,8 @@ def main() -> int:
     # nothing and the check passed no matter what the files contained. A test
     # that cannot fail is worse than no test, because it is also a claim.
     #
-    # The trailing group is what stops `import registry_link` - the dashboard's
-    # own adapter - from counting as a direct import of the package.
+    # The trailing group is what stops a name that merely starts with
+    # "registry" (registry_link was one) from counting as an import of it.
     IMPORTS_REGISTRY = re.compile(
         r"^\s*(?:from\s+registry(?:\.\w+)*\s+import"
         r"|import\s+registry(?:\.\w+)*\s*(?:as\b|#|$))", re.M)
@@ -100,45 +100,12 @@ def main() -> int:
     check("no engine module imports this package", not engine,
           ", ".join(engine) or "anpr/ core/ api/ sim/ are clean")
 
-    # The CONTROL ROOM is allowed to, because the registry is meant to be
-    # visible to an operator - but through exactly one adapter, so the coupling
-    # stays something you can delete in one line.
-    direct = importers("dashboard")
-    check("the dashboard reaches the registry through one adapter only",
-          direct == ["dashboard/registry_link.py"],
-          ", ".join(direct) or "nothing imports it — the adapter is missing")
-
-    # And the promise that actually matters, executed rather than asserted:
-    # with `registry` unimportable, the adapter must load, report itself
-    # unavailable, and render nothing - not raise. "No import statement exists"
-    # was always a proxy for this; now that the dashboard does import it, the
-    # proxy is gone and the real property has to be tested directly.
-    probe = subprocess.run(
-        [sys.executable, "-c", textwrap.dedent("""
-            import sys
-            class Block:
-                def find_module(self, name, path=None):
-                    return self if name.split('.')[0] == 'registry' else None
-                def find_spec(self, name, path=None, target=None):
-                    if name.split('.')[0] == 'registry':
-                        raise ImportError('registry removed (simulated)')
-                    return None
-            sys.meta_path.insert(0, Block())
-            sys.path.insert(0, 'dashboard')
-            import registry_link as r
-            assert r.available() is False, 'reported available with no registry'
-            assert r.lookup('WB24AB1234') is None
-            assert r.lookup_many(('WB24AB1234',)) == {}
-            assert r.findings('WB24AB1234') == []
-            assert r.incidents_for('WB24AB1234') == []
-            assert r.badge_html(None) == ''
-            assert r.refer({}) is None
-            r.clear()
-            print('OK')
-        """)], cwd=ROOT, capture_output=True, text=True)
-    check("the dashboard survives registry/ being deleted",
-          "OK" in probe.stdout,
-          (probe.stderr.strip().splitlines() or ["no output"])[-1][:70])
+    # The CONTROL ROOM (web/, served by the API) shows the mock registry from
+    # core/registry.py, not this package, so nothing outside registry/ imports
+    # it at all: delete the folder and nothing else can notice.
+    others = importers("livecam", "phonecam", "viz")
+    check("nothing outside registry/ imports this package", not others,
+          ", ".join(others) or "livecam/ phonecam/ viz/ are clean")
 
     ro = store.platform_ro()
     if ro is None:

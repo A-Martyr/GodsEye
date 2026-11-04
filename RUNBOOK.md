@@ -1,79 +1,80 @@
-# Runbook — starting all three services
+# Runbook — running the full demo
 
-`RUN.md` gets you a control room in two minutes. This is the full demo: the API,
-the control room, and the real-photograph reader on the GPU, all at once, with
-the reasoning behind each flag and what to do when one of them will not start.
+`RUN.md` gets you a control room in two minutes. This is the full demo: which
+reader to run, the reasoning behind each flag, and what to do when something
+will not start.
 
-Everything here has been run on this machine. Where a number appears it was
-measured, not estimated.
+Where a number appears it was measured, not estimated.
 
 ---
 
-## 1. What you are starting, and why it is three processes
+## 1. What you are starting
 
-| Service | Port | Device | What it is for |
-|---|---|---|---|
-| **API + live feed** | 8000 | **CPU** | the simulated camera network, incident injectors, judge console |
-| **Control room** | 8501 | **CPU** | the operator dashboard — map, tracking, alerts, analytics |
-| **Real-photograph reader** | 8502 | **GPU** | uploading a real photo of a real plate |
+| Service | Port | What it is for |
+|---|---|---|
+| **API + control room** | 8000 | the control room (`web/`, served at `/`), the simulated camera network, the incident injectors, the judge console (`/j`), the API (`/docs`) |
+| Phone junction cameras (optional) | 8504 | `phonecam.bat` — phones on a real road as cameras, read by the real-plate reader |
+| Security Console (optional) | 8506 / 8507 | `registry.bat` — the mock vehicle registry and its console, a separate package |
 
-Two dashboards, not one, and that is deliberate. They run the same
-`dashboard/app.py` with a different recogniser behind it:
+The control room is plain HTML, CSS and JS that the API serves itself, so the
+core demo is **one process**.
 
-- **8501** uses the CRNN, trained on this repo's synthetic camera model. It is
-  the right reader for the ANPR-engine tab's *generated* camera scenarios.
-- **8502** uses `anpr_ocr` — PP-OCRv5, pretrained on 558,000 real Indian plates.
-  It is the right reader for a **photograph**, and where the 91.0% figure comes
-  from.
+### Which reader
 
-Upload a real photo to 8501 and you will get a poor read. Capture a synthetic
-scenario on 8502 and you will also get a poor read. Each is strong where the
-other is weak; keeping both open is what lets you show either.
+The API runs one plate reader, chosen at start-up with `GODSEYE_OCR_BACKEND`:
+
+- **`crnn`** (the default) — trained on this repo's synthetic camera model. The
+  right reader for the simulated feed and the *Read a plate* camera scenarios.
+- **`anpr_ocr`** — PP-OCRv5, pretrained on 558,000 real Indian plates, driven by
+  this repo's decoder. The right reader for a **photograph**, and where the 91.0%
+  and 91.5% figures come from. It needs the paddle virtualenv (§2).
+
+Upload a real photo to a CRNN API and you will get a poor read; capture a
+synthetic scenario on an `anpr_ocr` API and you will also get a poor read. Pick
+the one that matches what you are about to show.
 
 ### Why the GPU goes to one process only
 
-`GODSEYE_DEVICE=cpu` on the API and the control room is not caution, it is a
-measured requirement. This machine has a **GTX 1650 with 4 GB**. When more than
-one process holds a CUDA context on it they do not share gracefully — they
-starve each other:
+This machine has a **GTX 1650 with 4 GB**. When more than one process holds a
+CUDA context on it they do not share gracefully — they starve each other:
 
 > With the API running on the GPU, `python tests.py` took **19 minutes** instead
 > of about 90 seconds, and the paddle reader's warm-up reported **1190 seconds**
 > — roughly a 50× starvation.
 
-So: the two CPU services never touch the card, and 8502 gets it to itself.
-`config.torch_device()` resolves `GODSEYE_DEVICE` against what is installed and
-falls back to CPU rather than raising, so asking for a GPU can never be the
-thing that stops the platform running.
+So when `phonecam.bat` (which runs the real-plate reader) is part of the demo,
+pin the API to the CPU with `GODSEYE_DEVICE=cpu` and let the phones' reader have
+the card. `config.torch_device()` resolves `GODSEYE_DEVICE` against what is
+installed and falls back to CPU rather than raising, so asking for a GPU can
+never be the thing that stops the platform running.
 
 ---
 
 ## 2. One-time prerequisites
-
-You have all of these already; this is for a fresh machine.
 
 ```bash
 py -3.13 --version          # 3.11+ for the main platform
 pip install -r requirements.txt
 ```
 
-The GPU reader needs its **own** virtualenv, because `paddlepaddle` publishes no
-wheels for Python 3.13+ and because importing paddle into a process that later
-loads a torch model corrupts torch's tensors — a binary symbol clash between the
-two frameworks' compiled extensions.
+The real-plate reader needs its **own** virtualenv, because `paddlepaddle`
+publishes no wheels for Python 3.13+ and because importing paddle into a process
+that later loads a torch model corrupts torch's tensors — a binary symbol clash
+between the two frameworks' compiled extensions.
 
 ```
 .venv-paddle\Scripts\python.exe     # Python 3.12 + paddle + a CPU-only torch
 ```
 
-`PADDLE_SETUP.md` has the build steps. Verify it in one line:
+`PADDLE_SETUP.md` has the build steps (Windows, Linux and macOS). Verify it in
+one line:
 
 ```bash
 ./.venv-paddle/Scripts/python.exe -c "import paddle; print(paddle.device.get_device())"
 ```
 
-Expect `gpu:0`. If it prints `cpu`, the reader still works — it is just ~10×
-slower and you will not see the 108 ms figure.
+`gpu:0` on a CUDA machine; `cpu` on macOS or without CUDA — the reader still
+works there, about 10× slower.
 
 And a database:
 
@@ -81,196 +82,137 @@ And a database:
 py -3.13 seed.py --hours 84
 ```
 
-Roughly a minute. Only needed once, or when the alert queue has gone stale
-(§7).
+Roughly a minute. Only needed once, or when the alert queue has gone stale (§6).
 
 ---
 
-## 3. Starting all three — the shell matters
+## 3. Starting it — the shell matters
 
-**Your terminal is `cmd.exe`.** The `VAR=value command` prefix used throughout
-these docs is POSIX syntax and does nothing in cmd — it will silently run
-without the variable set, which for 8502 means the GPU is never used and for the
-API means it takes the GPU it was supposed to leave alone.
+**On Windows the terminal is usually `cmd.exe`.** The `VAR=value command` prefix
+used in these docs is POSIX syntax and does nothing in cmd — it silently runs
+without the variable set.
 
-Use whichever set matches the window you are in.
+### cmd.exe
 
-### cmd.exe — one window per service
-
-**Window 1 — API**
+**Synthetic demo (default reader)**
 ```
 cd /d "<GodsEye folder>"
-set GODSEYE_DEVICE=cpu
 py -3.13 -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-**Window 2 — control room**
-```
-cd /d "<GodsEye folder>"
-set GODSEYE_DEVICE=cpu
-py -3.13 -m streamlit run dashboard/app.py --server.port 8501
-```
-
-**Window 3 — real-photograph reader, on the GPU**
+**Real photographs**
 ```
 cd /d "<GodsEye folder>"
 set GODSEYE_OCR_BACKEND=anpr_ocr
-.venv-paddle\Scripts\python.exe -m streamlit run dashboard/app.py --server.port 8502
+.venv-paddle\Scripts\python.exe -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-> **`set` persists for the life of the window.** Window 3 must be a *new* one.
-> Reusing window 1 or 2 carries `GODSEYE_DEVICE=cpu` into it, paddle obeys it,
-> and the reader silently runs on the CPU — the single easiest way to lose the
-> GPU without any error appearing.
+> **`set` persists for the life of the window.** Start each variant in a *new*
+> window, or a variable from the last run leaks into the next one.
 
-### Git Bash / WSL
+### Git Bash, WSL, Linux, macOS
 
 ```bash
 cd "<GodsEye folder>"
-
-GODSEYE_DEVICE=cpu py -3.13 -m uvicorn api.main:app --host 0.0.0.0 --port 8000 &
-GODSEYE_DEVICE=cpu py -3.13 -m streamlit run dashboard/app.py --server.port 8501 --server.headless true &
-GODSEYE_OCR_BACKEND=anpr_ocr ./.venv-paddle/Scripts/python.exe -m streamlit run dashboard/app.py --server.port 8502 --server.headless true &
+py -3.13 -m uvicorn api.main:app --host 0.0.0.0 --port 8000                                   # synthetic demo
+GODSEYE_OCR_BACKEND=anpr_ocr ./.venv-paddle/Scripts/python.exe -m uvicorn api.main:app --port 8000   # real photographs
 ```
 
+(On Linux and macOS the virtualenv's interpreter is `.venv-paddle/bin/python`.)
 Here the prefix scopes to the one command, so no window discipline is needed.
 
 ### PowerShell
 
 ```powershell
-$env:GODSEYE_DEVICE = "cpu"
-py -3.13 -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+$env:GODSEYE_OCR_BACKEND = "anpr_ocr"
+.venv-paddle\Scripts\python.exe -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
 Same persistence caveat as cmd — `$env:` lives for the session.
 
+`--host 0.0.0.0` is what lets a judge's phone on the same network reach the
+console; without it the API accepts connections from this machine only.
+
 ---
 
-## 4. Why not just use the .bat files
+## 4. The .bat files
 
-They work, and they do not cover this.
+| Script | What it does |
+|---|---|
+| `demo.bat` | checks the environment, seeds if needed, starts the API on 8000 with `GODSEYE_DEVICE=cpu`, opens the control room |
+| `api.bat` | the API (and so the control room) alone on 8000, default reader |
+| `seed.bat` | builds the database |
+| `check.bat` | runs `demo_check.py` — worth running on a new machine |
+| `phonecam.bat` | phone junction cameras on 8504 |
+| `livecam.bat` / `livecam_web.bat` | a webcam as a junction camera |
+| `registry.bat` | the optional Security Console (8506) and registry service (8507) |
+| `share.bat` | the public judge link through a Cloudflare tunnel (§7) |
+| `stop.bat` | stops everything by port, **and `cloudflared`** |
 
-| Script | What it does | Gap |
-|---|---|---|
-| `demo.bat` | checks the environment, seeds if needed, starts **8000 + 8501**, opens the browser | **never starts 8502**, and sets no `GODSEYE_DEVICE` — so both take the GPU |
-| `api.bat` | API alone on 8000 | no device pin |
-| `dashboard.bat` | control room alone on 8501 | no device pin |
-| `dashboard_paddle.bat` | **8502 on the paddle venv, `GODSEYE_OCR_BACKEND=anpr_ocr`** | correct, use it |
-| `seed.bat` | builds the database | |
-| `check.bat` | runs `demo_check.py` | worth running on a new machine |
-| `share.bat` | starts the Cloudflare tunnel | |
-| `stop.bat` | kills 8000/8501/8502 **and `cloudflared`** | |
-
-So the closest one-click path is:
-
-```
-demo.bat              rem API + control room, but both on the GPU
-dashboard_paddle.bat  rem the real-photograph reader
-```
-
-That works for a quick look. For a demo, start them by hand with the device
-pins — three processes contending for 4 GB is exactly the case §1 measured.
+For real photographs there is no one-click script: start the API by hand as in
+§3, so the reader choice is explicit.
 
 ---
 
 ## 5. Verifying it actually came up
 
-A port answering is not the same as a service working. Run this:
-
-```bash
-py -3.13 -c "
-import time, urllib.request
-t = {'API  8000':'http://127.0.0.1:8000/api/health',
-     'CTRL 8501':'http://127.0.0.1:8501/_stcore/health',
-     'READ 8502':'http://127.0.0.1:8502/_stcore/health'}
-pend=dict(t); t0=time.time()
-while pend and time.time()-t0 < 150:
-    for n,u in list(pend.items()):
-        try:
-            with urllib.request.urlopen(u, timeout=2) as r:
-                if r.status==200: print(f'  {n}  up after {time.time()-t0:5.1f}s'); pend.pop(n)
-        except Exception: pass
-    time.sleep(1.5)
-for n in pend: print(f'  {n}  NOT UP')
-"
-```
-
-Then confirm the API is actually simulating, not merely listening:
+A port answering is not the same as a service working:
 
 ```bash
 curl -s http://127.0.0.1:8000/api/health
 ```
 
-Look for `"live_feed": true`, `"cameras": 35`, and a `simulator.captures` count
-that **increases** when you run it again. A zero that stays zero means the feed
-is not ticking.
+Look for `"live_feed": true`, `"cameras": 35`, `"ocr_engine_loaded": true`, and a
+`simulator.captures` count that **increases** when you run it again. A zero that
+stays zero means the feed is not ticking.
 
-Confirm the reader really has the GPU:
-
-```bash
-./.venv-paddle/Scripts/python.exe -c "import paddle; print(paddle.device.get_device())"
-nvidia-smi --query-gpu=memory.used,clocks.sm --format=csv,noheader
-```
-
-Once 8502 has warmed, `nvidia-smi` should show a few hundred MB in use. **0 MiB
-means nothing has claimed the card** — usually the `set` leak from §3.
-
-- Control room → http://localhost:8501
-- Real-photo reader → http://localhost:8502
-- API docs → http://localhost:8000/docs
-
----
-
-## 6. The paddle warm-up — the thing that looks broken and is not
-
-**8502 shows no GPU use and does nothing until a browser opens it.**
-
-`_warm_reader()` is a Streamlit cached resource, so it fires when a real session
-connects. `curl` cannot trigger it — Streamlit runs the script over a websocket,
-not the HTTP GET. Then:
+The reader warms in the background as the API starts, so the first read does
+not land on whoever clicks first. Its log line says which reader it is and where
+it runs:
 
 ```
 [anpr.ocr] reader warm in 64.0s (anpr_ocr, paddle:gpu:0)
 ```
 
-**About a minute, once per process.** After that a whole-photograph read is
-~108 ms warm.
+About a minute for `anpr_ocr`, once per process; after that a whole-photograph
+read is ~108 ms warm on the GTX 1650. Start the API a few minutes before you
+need it. `GODSEYE_WARM=0` turns the warm-up off.
 
-So: **open the 8502 tab several minutes before you need it.** The warm-up runs
-in the background and by the time anyone asks, reads are instant. Discovering
-this in front of an audience is a minute of silence you cannot fill.
-
-You will also see, repeatedly, in the 8502 log:
+You will also see, repeatedly:
 
 ```
 Couldn't access the Hub to check for update but local file already exists.
 ```
 
 That is **expected and desirable**. `HF_HUB_OFFLINE=1` is set automatically once
-the weights are on disk, which is what stops huggingface_hub round-tripping to
-the network on every load — it took reader startup from 50 s to 6 s and it is
-what makes the platform survive venue wi-fi.
+the weights are on disk, which stops huggingface_hub round-tripping to the
+network on every load — it took reader start-up from 50 s to 6 s, and it is what
+makes the platform survive venue wi-fi.
+
+- Control room → http://localhost:8000/
+- API docs → http://localhost:8000/docs
+- Judge console → http://localhost:8000/j
 
 ---
 
-## 7. Before a demo
+## 6. Before a demo
 
 ```bash
 py -3.13 tests.py
 ```
 
-**81 checks.** All must pass. It points the database at a scratch temp file, so
+**101 checks.** All must pass. It points the database at a scratch temp file, so
 it never touches `data/godseye.db`.
 
 Then check the alert queue is not stale:
 
 ```bash
-curl -s "http://127.0.0.1:8000/api/alerts/summary?hours=24"
+curl -s "http://127.0.0.1:8000/api/alerts/summary?hours=6"
 ```
 
-The dashboard's Alerts tab uses a 24-hour window. If the newest alert is older
-than that the queue renders empty, which reads as a broken platform rather than
-an old database. Reseed if so:
+The control room's Alerts panel shows the last 6 hours of the data. If the
+newest alert is older than that the panel renders empty, which reads as a broken
+platform rather than an old database. Reseed if so:
 
 ```
 stop.bat
@@ -283,35 +225,34 @@ Then restart and test the centrepiece twice:
 curl -s -X POST http://127.0.0.1:8000/api/sim/inject/clone
 ```
 
-A critical clone alert should appear within about two seconds, naming both
-junctions and the implied speed. Two runs, because it depends on seeded data.
+A cloned-plate alert should appear in the control room within about two
+seconds, naming both junctions and the implied speed. Two runs, because it
+depends on seeded data.
 
 ---
 
-## 8. The judge link
+## 7. The judge link
 
-Sidebar → **Judge link**. Three routes, and the panel says which it can stand
-behind.
+In the control room: **Insights › Incidents › Judge console**, with a QR code
+for the link. Three routes:
 
-- **Anywhere** — *Create a public link*, or `share.bat`. `cloudflared` dials out
-  and returns an `https://….trycloudflare.com` address in about five seconds.
-  No account, no firewall change, no port forwarding. **The address is different
-  every run.**
-- **Same network** — `http://<your-lan-ip>:8000/j`, with a QR code above it.
-  This is the one a judge standing at your table uses; scan it rather than
+- **Same network** — `http://<your-lan-ip>:8000/j`, the link the panel shows.
+  This is the one a judge standing at your table uses; scan the QR rather than
   typing four numbers, a port and a path on a phone keyboard.
+- **Anywhere** — run `share.bat`. `cloudflared` dials out and returns an
+  `https://….trycloudflare.com` address in about five seconds. No account, no
+  firewall change, no port forwarding. **The address is different every run.**
 - **No network** — `http://127.0.0.1:8000/j` on the laptop itself.
 
-The LAN address changes with the network you are on. It has been
-`192.168.29.204` and `10.45.68.26` on this machine in the last two days, so
-**re-read it from the panel on the day** rather than from any note.
+The LAN address changes with the network you are on, so **re-read it from the
+panel on the day** rather than from any note.
 
 A public tunnel publishes the judge console on the internet for as long as it
-runs. `stop.bat` kills it; so does *Stop sharing*.
+runs. `stop.bat` kills it.
 
 ---
 
-## 9. Stopping
+## 8. Stopping
 
 ```
 stop.bat
@@ -325,24 +266,23 @@ public address pointing at this laptop long after the demo.
 By hand:
 
 ```bash
-netstat -ano | findstr ":8000 :8501 :8502"
+netstat -ano | findstr ":8000"
 taskkill /PID <pid> /F
 ```
 
 ---
 
-## 10. When something will not start
+## 9. When something will not start
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Port 8501 is not available` (exit 4) | an older Streamlit is still holding it | `stop.bat`, or `netstat -ano \| findstr :8501` then `taskkill /PID <pid> /F` |
-| Reader is slow, `nvidia-smi` shows 0 MiB | `GODSEYE_DEVICE=cpu` leaked into the 8502 window | start 8502 in a **fresh** window (§3) |
-| Everything is slow, tests crawl | two or three processes on the 4 GB GPU | pin the API and 8501 to CPU |
-| A theme or `.streamlit/config.toml` change did nothing | **config is read at startup**; only source hot-reloads | restart that Streamlit process |
+| `address already in use` on 8000 | an older API is still holding it | `stop.bat`, or `netstat -ano \| findstr :8000` then `taskkill /PID <pid> /F` |
+| A real photo reads poorly | the API is running the CRNN | restart it with `GODSEYE_OCR_BACKEND=anpr_ocr` from `.venv-paddle` (§3) |
+| Everything is slow, tests crawl | two processes on the 4 GB GPU | pin the API with `GODSEYE_DEVICE=cpu` (§1) |
+| Alerts panel empty | the database is older than the 6-hour window | reseed (§6) |
 | `'grep' is not recognized` | a POSIX command in `cmd.exe` | run it in Git Bash, or use `findstr` |
 | Judge link works on the laptop, not on a phone | venue wi-fi blocks client-to-client, or the firewall | use the public tunnel, or hand over the laptop |
-| Dashboard stalls for a few seconds | a fragment rerun, or a first map draw | wait; or hamburger → Rerun |
-| First read on 8502 takes a minute | paddle building the model | §6 — open the tab early |
+| First read takes a minute | paddle building the model | §5 — start the API early |
 
 ### A note on GPU clocks
 
@@ -358,14 +298,15 @@ genuinely does not exist. **A full reboot cleared it**, taking throughput from
 ## Quick reference
 
 ```
-# three windows, cmd.exe
-set GODSEYE_DEVICE=cpu   &&  py -3.13 -m uvicorn api.main:app --host 0.0.0.0 --port 8000
-set GODSEYE_DEVICE=cpu   &&  py -3.13 -m streamlit run dashboard/app.py --server.port 8501
-set GODSEYE_OCR_BACKEND=anpr_ocr  &&  .venv-paddle\Scripts\python.exe -m streamlit run dashboard/app.py --server.port 8502
+# synthetic demo
+py -3.13 -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+
+# real photographs (cmd.exe)
+set GODSEYE_OCR_BACKEND=anpr_ocr  &&  .venv-paddle\Scripts\python.exe -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 
 # verify
 curl -s http://127.0.0.1:8000/api/health
-py -3.13 tests.py                       # expect: 81 passed, 0 failed
+py -3.13 tests.py                       # expect: 101 passed, 0 failed
 
 # stop
 stop.bat
@@ -373,7 +314,6 @@ stop.bat
 
 | | |
 |---|---|
-| Control room | http://localhost:8501 |
-| Real-photo reader | http://localhost:8502 |
+| Control room | http://localhost:8000/ |
 | API docs | http://localhost:8000/docs |
-| Judge console | `http://<lan-ip>:8000/j` — read it from the sidebar |
+| Judge console | `http://<lan-ip>:8000/j` — read it from Insights › Incidents |

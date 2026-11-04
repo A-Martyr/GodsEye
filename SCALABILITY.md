@@ -7,7 +7,7 @@ path past it. Numbers marked *estimate* have not been measured.
 ## What the prototype is
 
 One machine runs everything: the reader, a single SQLite database (WAL mode),
-the FastAPI service and the Streamlit control room, over 35 real Kolkata
+the FastAPI service and the web control room it serves, over 35 real Kolkata
 junctions with simulated camera feeds plus live webcam and phone-camera inputs.
 
 ## Measured
@@ -27,7 +27,7 @@ junctions with simulated camera feeds plus live webcam and phone-camera inputs.
    (*estimate*: ~1,800 vehicles/hour per approach at peak is 0.5 vehicles/s).
 2. **One SQLite writer.** Fine for 35 junctions; a city's thousands of cameras
    need a server database.
-3. **One process.** The dashboard, API and reader share one machine and one GPU
+3. **One process.** The control room, API and reader share one machine and one GPU
    (`RUNBOOK.md` documents the single-CUDA-context limit).
 
 ## The path past it

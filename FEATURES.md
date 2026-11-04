@@ -19,7 +19,7 @@ A single idea runs through all of them, and it is the reason they are worth
 having rather than merely having: **an answer is reported together with how
 much evidence is behind it.** A ranked list looks equally authoritative on two
 observations or two hundred. Every function below carries a `confident`,
-`reliable`, `observability` or `caveats` field, and the dashboard renders those
+`reliable`, `observability` or `caveats` field, and the control room renders those
 *before* the numbers they qualify.
 
 ---
@@ -147,7 +147,7 @@ vehicle has too few sightings for the word "usually" to be honest.
 
 **Speed:** 60 ms per prediction, 2 ms per pattern, over 18,763 sightings.
 **API:** `GET /api/plates/{plate}/forecast`, `GET /api/plates/{plate}/pattern`.
-**Dashboard:** *Track a plate* -> "Where it is likely to go next".
+**Control room:** search a plate -> "Likely next junctions".
 
 ---
 
@@ -364,7 +364,7 @@ the console returns 200. LAN requests are unaffected.
 
 ---
 
-## Operational note: one GPU, three services
+## Operational note: one GPU, one process on it
 
 On this machine (GTX 1650, 4 GB) **multiple CUDA contexts starve each other
 catastrophically**, and it is not about workload:
@@ -379,9 +379,8 @@ catastrophically**, and it is not about workload:
 **Run the demo like this:**
 
 ```bash
-GODSEYE_DEVICE=cpu  uvicorn api.main:app --port 8000      # CRNN, 16 ms on CPU
-GODSEYE_DEVICE=cpu  streamlit run dashboard/app.py --server.port 8501
-                    dashboard_paddle.bat                  # 8502 keeps the GPU
+GODSEYE_DEVICE=cpu  uvicorn api.main:app --port 8000      # control room + CRNN, 16 ms on CPU
+                    phonecam.bat                          # the real-plate reader keeps the GPU
 ```
 
 Only the real-photograph reader needs the GPU - it took decodes from 1650 ms to

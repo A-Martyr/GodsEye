@@ -76,7 +76,7 @@ CACHE_MAX = _int("GODSEYE_REG_CACHE_MAX", 2000)
 # Thresholds, not tastes. Each one exists because the platform's own error
 # rate could otherwise manufacture the finding.
 #
-# Its own port, well clear of the platform's 8000/8501/8502 and the camera
+# Its own port, well clear of the platform's 8000 and the camera
 # demos' 8503/8504/8505, so the console can be run or not run without any of
 # them noticing.
 CONSOLE_PORT = _int("GODSEYE_CONSOLE_PORT", 8506)
@@ -101,7 +101,7 @@ CHALLAN_ALERT_AMOUNT = _float("GODSEYE_REG_CHALLAN_ALERT", 5000.0)
 # They are separate systems in the story and separate endpoints here; running
 # them in one process is a demo convenience, not a claim about architecture.
 #
-# Its own port again, clear of 8000/8501/8502/8503/8504/8505 and of the
+# Its own port again, clear of 8000/8503/8504/8505 and of the
 # console's 8506.
 SERVICE_PORT = _int("GODSEYE_REG_SERVICE_PORT", 8507)
 SERVICE_HOST = os.getenv("GODSEYE_REG_SERVICE_HOST", "127.0.0.1")

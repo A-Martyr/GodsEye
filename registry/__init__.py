@@ -2,7 +2,7 @@
 
 Isolated on purpose. This package owns its own SQLite file
 (data/registry.db) and never opens the platform's store for writing. Nothing
-in anpr/, core/, api/, sim/, dashboard/, livecam/ or phonecam/ imports it, so
+outside registry/ imports it, so
 it cannot change how any of them behave. Deleting this directory and
 data/registry.db removes it completely.
 

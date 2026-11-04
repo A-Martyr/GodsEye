@@ -1,14 +1,14 @@
 """Pre-demo environment check — what the .bat launchers run before starting anything.
 
 Two minutes before a demo is the wrong moment to discover that the interpreter
-on this machine is missing streamlit, or that models/ did not survive the copy.
+on this machine is missing fastapi, or that models/ did not survive the copy.
 demo.bat calls this first and refuses to open two windows that would both fail;
 check.bat runs it on its own so the answer can be had without starting servers.
 
 The distinction that matters here is FAIL vs WARN. torch and ultralytics are
 genuinely optional — without them anpr/ocr.py falls back to the classical
 segment-and-classify reader and the platform still demos, just less accurately —
-so their absence is a warning. streamlit, fastapi and the database are not
+so their absence is a warning. fastapi, uvicorn and the database are not
 optional: without them there is nothing to show, so those are failures.
 
 Exit code is 0 when the demo can run (warnings and all) and 1 when it cannot.
@@ -58,7 +58,7 @@ def main() -> int:
     required = [
         ("numpy", "everything", True),
         ("cv2", "image handling", True),
-        ("streamlit", "the dashboard", True),
+        ("streamlit", "the registry console only (optional)", False),
         ("fastapi", "the API", True),
         ("uvicorn", "the API", True),
         ("sklearn", "the glyph classifier", True),

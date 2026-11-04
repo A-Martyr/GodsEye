@@ -35,19 +35,18 @@ networkx>=3.3
 pandas>=2.2
 
 # =====================================================================
-# 3. Dashboard - the Streamlit control room
+# 3. Control room extras - the control room itself is web/, served by the API
 # =====================================================================
-# streamlit and altair are NOT optional for `streamlit run dashboard/app.py`.
-streamlit>=1.50
-pydeck>=0.9
-altair>=5.3
 requests>=2.32
 matplotlib>=3.8                  # font fallback for the plate renderer
 # The judge link is meant to be scanned, not typed. qr_png() swallows this
-# package's absence so a missing install cannot take the sidebar down - which
-# meant it went undeclared here, and any environment that did not happen to
-# have it showed a Judge link panel with no QR on it and no explanation.
+# package's absence so a missing install cannot take the control room down -
+# which meant it went undeclared here, and any environment that did not happen
+# to have it showed a judge console panel with no QR on it and no explanation.
 qrcode[pil]>=7.4
+# Optional: the registry Security Console (registry/console.py, registry.bat)
+# is a separate Streamlit app. Nothing else needs Streamlit:
+#   pip install "streamlit>=1.50"
 
 # =====================================================================
 # 4. Neural extras - CRNN reader and EasyOCR comparison backend

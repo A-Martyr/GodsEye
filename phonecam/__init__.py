@@ -7,7 +7,7 @@ the demo from "it can read a plate" into "it reconstructed where that vehicle
 went", which is the thing the brief actually asks for.
 
 Separate from livecam/ and from the platform: imported by nothing in anpr/,
-core/, api/, sim/ or dashboard/. It reuses livecam's reader and vote (which in
+core/, api/ or sim/. It reuses livecam's reader and vote (which in
 turn use the platform's cached engine) and writes sightings only through
 core/enrol.py, only when asked.
 """

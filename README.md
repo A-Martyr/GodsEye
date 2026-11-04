@@ -40,7 +40,7 @@ the platform is wrong far less often than it is silent. `python tests.py` runs
 the end-to-end self-check (101 checks); `QUALITY.md` records the latest run and
 static analysis, and `SCALABILITY.md` covers the path from one prototype to a
 city. The synthetic table comes from `models/benchmark.json`, which the
-dashboard renders from the same file so the two cannot disagree; the other
+control room renders from the same file so the two cannot disagree; the other
 measurements name the script or probe that produced them.
 
 ---
@@ -66,14 +66,13 @@ python -m anpr.benchmark --samples 100 --scenes 60 --layouts 100 --burst 5 --jso
 python -m anpr.camera_sheet                     # see what the camera model produces
 python -m anpr.compare_backends --samples 100   # CRNN vs the classical engine
 python -m core.repair --hours 6                 # recover refused captures from the network
-python tests.py                                 # end-to-end self-check (58 checks)
+python tests.py                                 # end-to-end self-check (101 checks)
 ```
 
 The control room (`web/`) is plain HTML, CSS and JS served by the same API
 process, which also runs the live camera feed and the incident injectors. For
 real photographs, start the API from `.venv-paddle` with
 `GODSEYE_OCR_BACKEND=anpr_ocr` so the read panel uses the real-plate reader.
-The old Streamlit dashboard (`dashboard/app.py`) is superseded by it.
 
 ---
 
@@ -110,7 +109,7 @@ graph TB
     STORE --> CLONE[Clone verdict<br/>at search time, misread-guarded]
 
     TRAJ & ANA & ALERT & CLONE & INF --> API[FastAPI + WebSocket]
-    API --> UI[Streamlit control room<br/>GIS maps · heatmaps]
+    API --> UI[Web control room<br/>map · routes · heatmap]
 
     GEO[/cameras.json<br/>graph with real coordinates/] -.-> TRAJ & ANA & ALERT & REP
 ```
@@ -364,7 +363,7 @@ a scene while leaving most of it behind — and each region is decoded at a few
 insets, because a box that carries a strip of bumper into the binariser reads
 worse than one cut slightly tight. The most confident legal read wins.
 
-**When it finds nothing it says why.** The dashboard draws the regions it
+**When it finds nothing it says why.** The control room draws the regions it
 examined and reports, in words, what failed: no plate-shaped region; regions that
 held no arrangement of characters spelling a valid registration; or — most often —
 a candidate that did decode, but below the confidence floor, which is reported
@@ -400,7 +399,7 @@ burst column judges the platform.
 
 1,000 plates, 100 per condition. Each is decoded once as a single frame and
 again as a five-frame burst, so the run makes 6,000 reads — 427 s on a single CPU
-core, 14 plates/s. The dashboard renders the same `models/benchmark.json` this
+core, 14 plates/s. The control room renders the same `models/benchmark.json` this
 table is copied from, so the document and the running system cannot disagree:
 
 ```bash
@@ -472,7 +471,7 @@ escaping it cannot be read by any system, and burying one under opaque mud would
 only manufacture a lower number, not a more honest one. Nothing in the pipeline
 is tied to the synthetic renderer: `ANPREngine.read()` takes any plate crop and
 `read_frame()` takes a wider photograph, and both paths are exposed through the
-API and the dashboard's upload box. The seam for a production upgrade is
+API and the control room's upload box. The seam for a production upgrade is
 `detect_plate_candidates()` — return boxes from a trained detector and the rest
 of the pipeline is unchanged.
 
@@ -613,59 +612,19 @@ on the watchlist, after which every further sighting raises an alert.
 
 ## 3 · The map
 
-The control room draws the network from its own link geometry: each road link
-carries intermediate shape points, so the EM Bypass bends the way the EM Bypass
-bends instead of running as a straight line between two dots, and a
-reconstructed trajectory follows the road a vehicle must have taken. Layers can
-be toggled independently — roads coloured by congestion, directional flow arcs,
-camera sites sized by per-lane load and haloed by type, name labels, and the
-last five minutes of reads fading with age — over a choice of Carto basemaps
-that need no API token. Tooltips carry both directions of a corridor, because a
-road that crawls inbound and runs free outbound is the normal case and an
-average would hide it.
+The control room (`web/`, Leaflet over OpenStreetMap tiles, which need no key)
+draws the network from its own link geometry: each road link carries
+intermediate shape points, so the EM Bypass bends the way the EM Bypass bends
+instead of running as a straight line between two dots, and a reconstructed
+trajectory follows the road a vehicle must have taken. Roads are coloured by
+congestion — free, moderate, heavy, severe — and a road with no reads in the
+window stays grey, because no data is not "free". Camera sites pulse as reads
+arrive, and tooltips name each road with its length and free-flow speed.
 
-**Two rendering bugs found by driving the real browser** (Playwright against
-Chrome, screenshotting and reading the console, rather than reasoning about the
-code):
-
-* pydeck compiles any bare string passed to a layer into a *data accessor*, so
-  `width_units="pixels"` became `@@=pixels` — deck.gl looked for a column of
-  that name, found nothing, and the path width resolved to NaN. Every road
-  rendered as a viewport-sized coloured wedge over a hidden basemap, and the
-  same bug made every text layer invisible. Enum constants have to be wrapped in
-  `pdk.types.String`.
-* the page refreshed by sleeping five seconds, clearing every cached query and
-  rerunning the whole script. Streamlit renders *all* tab bodies, so that
-  rebuilt four maps and remounted their canvases on a timer. The live map is now
-  an `st.fragment` with `run_every`, each chart has a stable component key, and
-  the cached queries carry their own TTL. Measured over four tab round-trips,
-  six layer toggles and three refresh cycles in a browser session: **22 canvases
-  and 3 WebGL contexts, constant, with no page errors** — against a growing set
-  before, which is what eventually exhausts Chrome's context budget and blacks the
-  map out. That was a live browser measurement; unlike every other number here it
-  has no artefact in the repo to re-run, so take it as a report rather than as
-  something you can reproduce from a command.
-
-## 4 · Macro traffic analytics
-
-Everything is derived from one primitive: two consecutive sightings of the same
-plate at two cameras. That pair gives a distance and a time, hence a speed,
-hence congestion — aggregated over every plate it gives the city.
-
-| View | What it computes |
-|---|---|
-| Camera density | Reads per minute, normalised per lane, as a load index |
-| Link flows | Volume and median speed on each road link, versus its free-flow speed |
-| Bottlenecks | Ranked by **vehicle-minutes of delay caused**, not by slowness alone — a slow empty road is not a problem |
-| Origin–destination | Where each plate entered and left the network, with median trip time; gateway-only for through-traffic demand |
-| Movement heatmap | Each traversed link sampled along its polyline, weighted by volume × congestion, so heat follows the roads instead of pooling on junctions |
-| Trends | Flow, unique vehicles and median network speed over time |
-| Sector load | Reads and per-minute rate aggregated by city sector (`GET /api/analytics/sectors`) |
-
-Speeds are only computed between *adjacent* cameras. Between two cameras that
-are not neighbours the vehicle's route is inferred, so neither the distance nor
-the speed would be a measurement of any particular road — those pairs feed the
-O-D matrix instead.
+A tracked vehicle's route is drawn leg by leg, with any physically impossible
+leg in red, and a cloned plate is drawn as a dashed line between the two
+junctions with the implied speed on it. *Insights › Analytics* adds a movement
+heatmap over the same map.
 
 ---
 
@@ -830,15 +789,13 @@ GodsEye/
 │   └── alerts.py             # real-time rules
 ├── sim/city.py               # traffic simulator feeding the real engine
 ├── api/                      # FastAPI: REST + WebSocket
-└── dashboard/
-    ├── app.py                # Streamlit control room (map runs as a fragment)
-    └── maps.py               # deck.gl layer builders for every map
+└── web/                      # the control room: plain HTML, CSS and JS, served by the API
 ```
 
 ## Tech stack
 
 Python 3.11+ · **PyTorch** (the CRNN reader) · OpenCV · scikit-learn · NumPy ·
-Pillow · NetworkX · pandas · SQLite (WAL) · FastAPI · Uvicorn · Streamlit · PyDeck · Altair
+Pillow · NetworkX · pandas · SQLite (WAL) · FastAPI · Uvicorn · Leaflet
 
 ## Team
 

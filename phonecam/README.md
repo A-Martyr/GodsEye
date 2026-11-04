@@ -11,7 +11,7 @@ where the vehicle went is the product**, and it is the thing the SIH brief
 actually asks for. A single webcam can only ever demonstrate the first.
 
 Separate from `livecam/` and from the platform: imported by nothing in `anpr/`,
-`core/`, `api/`, `sim/` or `dashboard/`. It reuses `livecam`'s reader and vote,
+`core/`, `api/` or `sim/`. It reuses `livecam`'s reader and vote,
 and writes sightings only through `core/enrol.py`.
 
 ---
@@ -121,7 +121,7 @@ things, because they answer three different questions:
 | **Turn off** (one junction) | Stops reading it and releases its camera. Pushed frames are dropped before they are decoded; a pulled camera is closed, so the device is genuinely free. Its vote is cleared so a stale lock cannot sit on the tile looking current. | `POST /api/cameras/{id}/off` |
 | **Turn all cameras off** | The same, for every junction. The GPU then does nothing. | `POST /api/cameras/off` |
 | **Stop recording** | Keeps reading and showing, writes nothing to the database. For rehearsing without leaving sightings behind. | `POST /api/recording/off` |
-| **Shut down service** | Stops the process. Phones lose their connection, the GPU is released, the dashboard falls back to "not running". | `POST /api/shutdown` |
+| **Shut down service** | Stops the process. Phones lose their connection, the GPU is released, and the control room simply stops receiving their reads. | `POST /api/shutdown` |
 
 `on` in place of `off` reverses each. A junction switched back on recovers in
 about a second for a phone, and a few seconds for a pulled camera — that delay
@@ -135,19 +135,19 @@ sighting, and switching the camera that produced it off does not unmake it.
 | port | scheme | bound to | for |
 |---|---|---|---|
 | 8504 | https | all interfaces | the phones |
-| 8505 | http | **127.0.0.1 only** | the Streamlit control room |
+| 8505 | http | **127.0.0.1 only** | the junction tiles, viewed on this laptop |
 
-The phones need https or the browser refuses `getUserMedia`. The dashboard
-needs the opposite: it is served over http, and an `<img>` pointed at an https
+The phones need https or the browser refuses `getUserMedia`. A page on this
+laptop that embeds the tiles needs the opposite: an `<img>` pointed at an https
 origin whose certificate the browser has never accepted is blocked or warned
-about on every load. Polling stills through Python instead was measured at
-57–149 ms per junction before Streamlit's own media round-trip — a slideshow,
-not a feed.
+about on every load.
 
-So the same app also answers on loopback over plain http, and the dashboard
-embeds the MJPEG stream directly. The browser then holds one connection per
-tile and receives frames as they are produced. Loopback only, deliberately:
-nothing on the LAN needs this, and the phones have their own encrypted way in.
+So the same app also answers on loopback over plain http, serving each
+junction's annotated MJPEG stream; a browser then holds one connection per tile
+and receives frames as they are produced. Loopback only, deliberately: nothing
+on the LAN needs this, and the phones have their own encrypted way in. The
+control room itself does not embed the tiles: phone reads reach it as ordinary
+sightings, through the database.
 
 ## Without phones
 
@@ -207,9 +207,9 @@ change when the service restarts.
 | Phone cannot reach the laptop at all | Same Wi-Fi, and the network must not be client-isolated (many guest networks are). Check the printed LAN address is the one the phone can see. |
 | Certificate error that will not clear | The laptop's IP changed. Delete `phonecam/certs/` and restart — it reissues for the current address. |
 | "anpr_ocr … CRNN is being used instead" | Not running from `.venv-paddle`. See PADDLE_SETUP.md. |
-| Everything slow | Another CUDA context. Stop the :8502 dashboard and the API. |
+| Everything slow | Another CUDA context. Restart the API with `GODSEYE_DEVICE=cpu`. |
 | Reads refused, board clearly visible | `set GODSEYE_LIVE_MIN_CONF=0.85`. The tile already shows what it saw and at what confidence. |
-| Sightings not appearing on the map | The dashboard reads the same database — check you did not start with `--no-enrol`. |
+| Sightings not appearing on the map | The control room reads the same database — check you did not start with `--no-enrol`. |
 | A journey is flagged as a clone unexpectedly | You are in `--realtime`. That is what it does. Drop the flag. |
 
 ---

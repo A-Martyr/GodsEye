@@ -2,7 +2,10 @@
 
 The SIH 2026 judges asked for objective evidence of code quality. This file
 records what was measured, when, and with what, so anyone can re-run it.
-Last run: 24 October 2026, Python 3.13.3, torch 2.13, Windows 11.
+Last run: 24 October 2026, Python 3.13.3, torch 2.13, Windows 11. Re-run on
+4 November 2026 for this public build (macOS, Python 3.12, torch 2.15), after
+the old Streamlit dashboard was removed: the self-check and the static analysis
+below.
 
 ## End-to-end self-check
 
@@ -31,18 +34,19 @@ first real-world result, not a Kolkata validation.
 
 ## Static analysis
 
-| Tool | Before (24 Oct) | After fixes | Notes |
-|---|---|---|---|
-| ruff (pyflakes + bugbear rules) | 84 findings | 64 | Remaining are style-level: 47 × `zip()` without `strict=`, unused loop variables, `raise ... from`. Two unused `config` imports were kept on purpose in benchmark scripts. |
-| bandit (security) | 2 high, 32 medium | **0 high**, 29 medium | See below. |
-| radon (complexity / maintainability) | — | average cyclomatic complexity **B (5.2)** over 953 blocks; maintainability index A for 77 of 82 modules, C for `anpr/ocr.py`, `core/vehicle_search.py`, `dashboard/app.py` | The three C modules are the next refactor targets. |
+| Tool | Before (24 Oct) | After fixes (24 Oct) | This build (4 Nov) | Notes |
+|---|---|---|---|---|
+| ruff (pyflakes + bugbear rules) | 84 findings | 64 | 65 | Remaining are style-level: 45 × `zip()` without `strict=`, unused loop variables, `raise ... from`. No undefined names (F821). Unused `config` imports are kept on purpose in benchmark scripts. |
+| bandit (security) | 2 high, 32 medium | **0 high**, 29 medium | **0 high**, 23 medium | See below. |
+| radon (complexity / maintainability) | — | average cyclomatic complexity **B (5.2)** over 953 blocks; maintainability index A for 77 of 82 modules | average **B (5.0)** over 849 blocks; maintainability index A for 70 of 73 modules, B for `core/geofence.py`, C for `anpr/ocr.py` and `core/vehicle_search.py` | The two C modules are the next refactor targets; the third, `dashboard/app.py`, left with the old UI. |
 
 Re-run with:
 
 ```bash
-uvx ruff check anpr core api dashboard livecam phonecam registry sim viz *.py --select E9,F,B --statistics
-uvx bandit -q -r anpr core api dashboard livecam phonecam registry sim viz config.py seed.py tests.py routine_report.py
-uvx radon cc -a anpr core api dashboard livecam phonecam registry sim viz
+uvx ruff check anpr core api livecam phonecam registry sim viz *.py --select E9,F,B --statistics
+uvx bandit -q -r anpr core api livecam phonecam registry sim viz config.py seed.py tests.py routine_report.py
+uvx radon cc -a anpr core api livecam phonecam registry sim viz
+uvx radon mi anpr core api livecam phonecam registry sim viz
 ```
 
 ### Fixed in this pass
@@ -52,13 +56,14 @@ uvx radon cc -a anpr core api dashboard livecam phonecam registry sim viz
 - **Model loading:** every `torch.load` now passes `weights_only=True`, so a
   tampered checkpoint cannot run code on load (bandit B614).
 - **Cache keys:** the two SHA-1 hashes used only as dashboard cache keys are
-  marked `usedforsecurity=False` (bandit B324, the two high findings).
+  marked `usedforsecurity=False` (bandit B324, the two high findings). That code
+  left with the old dashboard on 4 November.
 - 19 automatic fixes: unused imports, f-strings without placeholders, a
   duplicate stop-word.
 
 ### Remaining medium findings, reviewed
 
-- **23 × B608 (SQL built from strings):** spot-checked in `core/convoy.py`,
+- **17 × B608 (SQL built from strings; 23 before the old dashboard was removed):** spot-checked in `core/convoy.py`,
   `core/privacy.py`, `core/vehicle_search.py` and `registry/live.py`. The
   interpolated parts are code-generated placeholder lists (`?, ?, ?`), table
   names and column names; every value is bound as a `?` parameter. Not an

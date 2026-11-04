@@ -262,14 +262,13 @@ def test_cameras_unaffected() -> None:
     # The isolation claim, restated as a test. The ENGINE is what matters here:
     # nothing on the path from a camera to a stored sighting imports this
     # package, so none of the failures above could have reached the cameras
-    # even if it had wanted to. The dashboard MAY import it - through one
-    # adapter, checked by registry/selftest.py - because the registry is meant
-    # to be visible to an operator.
+    # even if it had wanted to. Nothing else imports it either (checked by
+    # registry/selftest.py): the control room shows core/registry.py's mock.
     #
     # Matched in Python, not by shelling out. The grep form of this check was
     # silently vacuous: `\s` does not survive subprocess quoting to
     # Git-for-Windows grep, and a plain "import registry" substring also
-    # matches the dashboard's `import registry_link`.
+    # matches any name that starts with it.
     import re
     pat = re.compile(r"^\s*(?:from\s+registry(?:\.\w+)*\s+import"
                      r"|import\s+registry(?:\.\w+)*\s*(?:as\b|#|$))", re.M)

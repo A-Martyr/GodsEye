@@ -8,16 +8,12 @@ City-wide ANPR intelligence platform. SIH 2026, Team Prometheus.
 pip install -r requirements.txt
 
 python seed.py                          # ~6 h of simulated city traffic into SQLite (~65 s)
-streamlit run dashboard/app.py          # the control room -> http://localhost:8501
+uvicorn api.main:app --port 8000        # the control room -> http://localhost:8000/
 ```
 
-That is enough to demo. The dashboard reads the database directly and works
-with the API stopped. For the live camera feed and the incident injectors, in a
-second terminal:
-
-```bash
-uvicorn api.main:app --port 8000        # http://localhost:8000/docs
-```
+That is enough to demo. The control room (`web/`) is served by the API itself,
+which also runs the live camera feed and the incident injectors; the API docs
+are at http://localhost:8000/docs.
 
 Python 3.11+. No GPU, no internet connection and no dataset download is needed
 for any of the above.
@@ -26,10 +22,10 @@ for any of the above.
 
 The point of the judge console is that an outsider picks the moment. The
 control room is never told, so the platform has to find the clone on its own.
-Open the **Judge link** panel in the sidebar; it offers three routes, and shows
-which ones it can actually stand behind.
+In the control room, open **Insights › Incidents › Judge console**; it shows the
+link and a QR code for it. There are three routes.
 
-**Anywhere in the world.** Press *Create a public link*, or run `share.bat`.
+**Anywhere in the world.** Run `share.bat`.
 `cloudflared` dials out to Cloudflare and comes back with an `https://…
 .trycloudflare.com` address about five seconds later. Send that to anyone, on
 any network — a friend in another city, a phone on mobile data. Because the
@@ -38,8 +34,8 @@ forwarded on the router, which are the two things you cannot arrange at a venue
 you walked into an hour ago. It needs no Cloudflare account.
 
 Two things to hold on to: the address is **different every run**, so the link
-must be re-sent after a restart, and it stays live until you press *Stop
-sharing*, close the `share.bat` window, or run `stop.bat`.
+must be re-sent after a restart, and it stays live until you close the
+`share.bat` window or run `stop.bat`.
 
 **Same network.** The `http://192.168.x.x:8000/j` links, for a judge standing
 at the table. No internet needed. They only work if the other device is on this
@@ -71,17 +67,21 @@ different resolvers and are generally unaffected.
 
 ## What to try first
 
-- **Live network** — the Kolkata camera network, roads coloured by congestion.
-- **Track a plate** — hit "Pick a busy vehicle", then retype the plate with one
-  character wrong. It still finds the vehicle: search is confusion-aware and
-  charges 0.4 rather than 1.0 for a substitution the OCR engine actually makes.
-- **ANPR engine** — pick a camera scenario (try `monsoon` or `far_lane`) and
-  press Capture & read.
+- **The map** — the Kolkata camera network, roads coloured by congestion, with
+  live reads on the left and alerts on the right.
+- **Search a plate** — take a plate from *Live reads* and type it with one
+  character wrong. It still finds the vehicle and draws its route: search is
+  confusion-aware and charges 0.4 rather than 1.0 for a substitution the OCR
+  engine actually makes.
+- **Read a plate** — pick a camera scenario (try `monsoon` or `far_lane`) and
+  read it, or upload a photograph.
+- **Insights** — city analytics and the heatmap, the engine's measured accuracy,
+  the incident injectors and the judge console, the privacy rules.
 
 ## Checking it yourself
 
 ```bash
-python tests.py                                  # 58-check end-to-end self-check
+python tests.py                                  # 101-check end-to-end self-check
 python -m viz.charts                             # regenerate the 13 charts in charts/
 python -m anpr.benchmark --samples 100 --burst 5 # re-measure the reader (~7 min)
 python -m anpr.camera_sheet                      # see what the camera model produces
@@ -93,11 +93,11 @@ touches `data/godseye.db`. Run it before any demo.
 
 ## The models are here, and that matters
 
-This bundle carries `models/crnn.pt`, `models/glyph_mlp.joblib` and
-`models/yolov8n-obb-plate.pt`. **A `git clone` does not.** `models/*.joblib` is
-in `.gitignore` and the YOLO detector was never committed, so a fresh clone
-silently retrains the glyph classifier on first use and falls back to the
-classical morphological localiser. Working from this folder avoids both.
+This repository carries `models/crnn.pt`, `models/glyph_mlp.joblib` and
+`models/yolov8n-obb-plate.pt`, so a `git clone` has everything the default
+reader needs and nothing is retrained on first use. Only the real-plate
+reader's weights (`models/anpr_ocr/`) are downloaded, on its first read
+(`PADDLE_SETUP.md`).
 
 `torch` is an optional dependency. Without it `anpr/ocr.py` falls back to the
 classical segment-and-classify reader and the platform still runs:
@@ -133,15 +133,15 @@ should not be redistributed.
 | `charts/CAPTIONS.md` | the 13 judge-facing charts and what each one argues |
 | `AUGMENTATION.md` | the camera model — the 8 stages and why they are in that order |
 | `PADDLE_SETUP.md` | how to set up Python 3.12 + paddle for the 91% reader |
-| `RUNBOOK.md` | starting all three services — the GPU split, the shell that actually works, verification, and what to do when one will not start |
+| `RUNBOOK.md` | the full demo — which reader to run, the GPU rule, the shell that actually works, verification, and what to do when something will not start |
 | `PERFORMANCE.md` | how a read went from 46 s to 118 ms, and what was measured to prove it cost no accuracy |
 | `FEATURES.md` | the seven capabilities added after the VehicleManager comparison, how each works, and what each refuses to claim |
 | `FIELD_TEST.md` | nine night phone photographs: why the localiser missed them, and the one recogniser defect it exposed |
 | `PHOTOMETRIC.md` | polarity, colour and low light — the measured 21.7-point deficit on inverted plates, and the plan for it |
 | `CEILING.md` | how far the reader can be pushed with no retraining — erasure decoding, burst super-resolution, RTO grammar, and where VLMs are actually worth using |
 | `REPAIR_VLM_PLAN.md` | raising repair recall with a second recogniser — the measured ceiling, and why it must be a separate channel |
+| `screenshots/` | the control room: the map, a misread search and its route, the engine's accuracy, city analytics |
 | `INTERNALS.md` | the four capability modules in depth — data structures, the arithmetic, every threshold, and the failure modes each one refuses to hide |
-| `share.html` | a single self-contained page — open it in any browser, no install |
 
 ## Licence note on the real-photo corpus
 

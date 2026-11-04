@@ -1,6 +1,6 @@
 """Shared chart styling.
 
-The palette is the one already used by share.html and the control room, so a
+The palette is the one already used by the control room, so a
 chart dropped into a slide next to a screenshot reads as the same system.
 
 The categorical order is fixed and assigned by entity, never cycled: a filter

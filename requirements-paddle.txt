@@ -38,10 +38,7 @@ python-multipart>=0.0.9
 networkx>=3.3
 pandas>=2.2
 
-# --- dashboard -------------------------------------------------------
-streamlit>=1.50
-pydeck>=0.9
-altair>=5.3
+# --- control room extras (the control room is web/, served by the API) --
 requests>=2.32
 matplotlib>=3.8
 

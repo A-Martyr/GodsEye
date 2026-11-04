@@ -6,7 +6,7 @@ and — optionally — enrols it as a sighting so it appears on the control room
 map with a trajectory.
 
 Entirely separate from the tuned still-photograph path. This package is
-imported by nothing in `anpr/`, `core/`, `api/`, `sim/` or `dashboard/`; it only
+imported by nothing in `anpr/`, `core/`, `api/` or `sim/`; it only
 ever reads *from* them. It runs in its own process on its own port, so nothing
 here can slow down or change the numbers the rest of the platform is measured
 on.
@@ -33,7 +33,7 @@ a printed board through a webcam is a real photograph. Without that environment
 the reader silently falls back to the CRNN — so both front-ends print and
 display the reason rather than letting it pass unnoticed.
 
-**Stop the paddle dashboard on :8502 first.** One 4 GB card, and a second CUDA
+**Keep the GPU to this reader:** start the API with `GODSEYE_DEVICE=cpu`. One 4 GB card, and a second CUDA
 context starves both by roughly 50x (RUNBOOK.md).
 
 ---
@@ -142,7 +142,7 @@ opened at all.
 | Reads refused, board clearly visible | Lower the floor: `set GODSEYE_LIVE_MIN_CONF=0.85`. The on-screen line already tells you what it saw and at what confidence. |
 | "anpr_ocr … CRNN is being used instead" | You are not in `.venv-paddle`. See PADDLE_SETUP.md. The CRNN reads real boards at about 1%. |
 | Detector picking up room text | `livecam.bat --aim-only` — skips detection entirely, reads only the brackets. Fastest and most robust. |
-| Everything slow, ~1 s per read | Another CUDA context. Stop the :8502 dashboard and the API. |
+| Everything slow, ~1 s per read | Another CUDA context. Restart the API with `GODSEYE_DEVICE=cpu`. |
 | Camera will not open | Close Teams/Zoom/the Camera app, or `--camera 1`. |
 | Video choppy | Check the printed camera fps line. If it is ~10, the backend probe picked a slow one — try `--imgsz 480`. |
 | Nothing detected, board too far | Fill the brackets. The board must be flat and under ~12° of tilt. |

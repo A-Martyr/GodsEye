@@ -239,7 +239,7 @@ py -3.13 <scratch>/sweep.py
 ./.venv-paddle/Scripts/python.exe <scratch>/stage2.py
 ```
 
-Stop the 8502 dashboard first. It holds a CUDA context on a 4 GB card, and a
+Stop any other process on the GPU first (an API running the real-plate reader). It holds a CUDA context on a 4 GB card, and a
 second one starves both — see the operational note at the end of `FEATURES.md`.
 
 ---
